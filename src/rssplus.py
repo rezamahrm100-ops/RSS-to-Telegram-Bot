@@ -41,6 +41,45 @@ def load_config() -> dict | None:
         raise
 
 
+def save_config(config: dict) -> None:
+    """Atomically persist checked RSSPlus settings without exposing credentials."""
+    import tempfile
+
+    if not isinstance(config, dict) or not isinstance(config.get("enabled"), bool):
+        raise ValueError("Invalid RSSPlus configuration")
+    if not isinstance(config.get("targets", {}), dict):
+        raise ValueError("Invalid RSSPlus target mappings")
+    if not isinstance(config.get("default", {}), dict):
+        raise ValueError("Invalid RSSPlus default policy")
+    for target, policy in config.get("targets", {}).items():
+        if not str(target).lstrip("-").isdecimal() or not isinstance(policy, dict):
+            raise ValueError("Invalid target policy")
+        if policy.get("mode", "auto") not in ("auto", "review"):
+            raise ValueError("Invalid publishing mode")
+        for field in ("include", "exclude"):
+            terms = policy.get(field, [])
+            if (not isinstance(terms, list) or len(terms) > 30
+                    or any(not isinstance(t, str) or len(t) > 80 for t in terms)):
+                raise ValueError("Invalid filter terms")
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    filename = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=".rssplus.",
+                suffix=".tmp", delete=False) as f:
+            filename = f.name
+            os.chmod(filename, 0o600)
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(filename, path)
+    finally:
+        if filename and os.path.exists(filename):
+            os.unlink(filename)
+
+
 def normalized_link(link: str | None) -> str:
     if not link:
         return ""

@@ -12,6 +12,7 @@ services:
     environment:
       MULTIUSER: "0"
       RSSPLUS_CONFIG: /app/config/rssplus.json
+      RSSPLUS_UI_LANG: ${RSSPLUS_UI_LANG:-fa}
     volumes:
       - ./config:/app/config
     # No public ports required.
