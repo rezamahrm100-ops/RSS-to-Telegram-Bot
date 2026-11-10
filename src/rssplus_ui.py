@@ -477,6 +477,7 @@ async def handle_callback(event) -> None:
                     tr("این اشتراک از هسته حذف شود؟", "Remove this subscription from the core?"),
                     [[button(tr("🗑 بله، حذف کن", "🗑 Yes, remove"), "remove", sub_id, page, cid)],
                      [button(tr("↩ انصراف", "↩ Cancel"), "sub", sub_id, page, cid)]]))
+                await event.answer()
             else:
                 if action == "toggle":
                     await inner.utils.activate_or_deactivate_sub(sub.user_id, sub, activate=sub.state != 1)
@@ -485,7 +486,9 @@ async def handle_callback(event) -> None:
                 elif action == "media":
                     await inner.customization.set_exhaustive_option(sub, "display_media")
                 elif action == "remove":
-                    await inner.sub.unsubs(sub.user_id, sub_ids=(sub.id,))
+                    result = await inner.sub.unsubs(sub.user_id, sub_ids=(sub.id,))
+                    if not result or not result.get("success_count"):
+                        raise ValueError(tr("حذف اشتراک ناموفق بود.", "Unable to remove subscription."))
                 await _show(event, await (feeds(page, cid) if action == "remove" else sub_detail(sub_id, page, cid)))
                 await event.answer()
         elif action in {"mode", "dedup"}:
