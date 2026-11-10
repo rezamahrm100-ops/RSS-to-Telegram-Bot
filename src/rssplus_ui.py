@@ -302,8 +302,10 @@ async def queue(page: int) -> Screen:
 
 async def features() -> Screen:
     config = rssplus.load_config()
-    # Intentionally read availability from the actual upstream and addon at render time.
+    # Read both callable capabilities and the upstream command registry at render time.
     from .parsing.post import Post
+    from .i18n import COMMANDS, MANAGER_COMMANDS
+    core_commands = "  ".join("/" + command for command in (*COMMANDS, *MANAGER_COMMANDS))
     capabilities = [
         (tr("خوراک RSS/Atom و مدیریت اشتراک", "RSS/Atom subscriptions"), callable(inner.sub.subs)),
         (tr("تنظیم قالب و رسانه", "Formatting and media"), callable(inner.customization.set_exhaustive_option)),
@@ -317,6 +319,8 @@ async def features() -> Screen:
     return Screen(
         tr("<b>⚙️ قابلیت‌های واقعی سامانه</b>", "<b>⚙️ Live system capabilities</b>")
         + "\n\n" + "\n".join(lines)
+        + "\n\n<b>" + tr("دستورات هسته:", "Registered core commands:") + "</b>\n"
+        + esc(core_commands, 1300)
         + "\n\n" + tr("این صفحه وجود قابلیت و تنظیمات فعلی را نمایش می‌دهد؛ "
                       "فعال بودن قابلیت به معنی تضمین موفقیت ارسال رسانه از هر منبع نیست.",
                       "Reflects implemented capabilities/configuration, not delivery guarantees."),
