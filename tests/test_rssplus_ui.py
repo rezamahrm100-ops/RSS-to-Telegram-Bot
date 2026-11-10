@@ -19,7 +19,7 @@ compiled = compile(ast.Module(body=chosen, type_ignores=[]), str(SOURCE), "exec"
 class DashboardHelpers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        namespace = {"ceil": math.ceil, "html": html, "re": re, "tr": lambda fa, en: fa}
+        namespace = {"ceil": math.ceil, "html": html, "re": re, "tr": lambda fa, en: fa, "PAGE_SIZE": 6, "MAX_KEYWORDS": 30}
         exec(compiled, namespace)
         cls.fn = namespace
 
