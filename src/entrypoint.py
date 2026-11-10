@@ -171,6 +171,17 @@ async def pre():
     bot.add_event_handler(command.administration.cmd_set_option,
                           events.NewMessage(pattern=construct_command_matcher('/set_option')))
 
+    # RSSPlus moderation commands.
+    from . import rssplus
+    bot.add_event_handler(
+        rssplus.handle_callback,
+        events.CallbackQuery(pattern=rb'^rssplus:(approve|reject):[0-9a-f]{16}$'),
+    )
+    bot.add_event_handler(
+        rssplus.handle_pending_command,
+        events.NewMessage(pattern=r'^/rssplus_pending(?:@\w+)?$'),
+    )
+
     # trigger bt inline query
     inline_query_matcher = rf'(@{env.bot_peer.username}\s+)?'
     bot.add_event_handler(command.administration.cmd_set_sub_limit,

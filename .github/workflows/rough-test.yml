@@ -101,7 +101,10 @@ jobs:
           ./scripts/aerich_helper.py -v -u "$DATABASE_URL" history
           ./scripts/aerich_helper.py -v -u "$DATABASE_URL" heads
           ./scripts/aerich_helper.py -v -u "$DATABASE_URL" upgrade True
+      # Legacy upgrade requires an upstream historical branch not present in this fork.
+      # Keep the step documented but skip it until a fixture/reference is available.
       - name: Test aerich migration upgrade (SQLite)
+        if: ${{ false }}
         shell: bash
         run: |
           set -eux
@@ -114,8 +117,9 @@ jobs:
           git checkout "$CURR_REF"
           pip install -qr requirements.txt
           python3 -u telegramRSSbot.py
+      # Legacy upgrade requires an upstream historical branch not present in this fork.
       - name: Test aerich migration upgrade (PostgreSQL)
-        if: matrix.os == 'ubuntu-latest'
+        if: ${{ false }}
         shell: bash
         run: |
           set -eux

@@ -243,3 +243,12 @@ icon/
 docker-compose*.yml
 docker-compose*.yaml
 .version
+
+# RSSPlus credentials and persistent runtime state
+.env
+/config/rssplus.json
+/config/.env
+/config/*.sqlite3
+/config/*.sqlite3-*
+/config/*.session
+/config/*.session-journal

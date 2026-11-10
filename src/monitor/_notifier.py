@@ -169,7 +169,13 @@ class Notifier:
         async with self._get_post_lock[idx]:
             post = await self._get_post(idx)
         if post:
-            await self._do_send(sub, post)
+            from .. import rssplus
+            handled = await rssplus.process_post(
+                sub=sub, post=post, entry=self._entries[idx],
+                feed=self._feed, send_func=self._do_send,
+            )
+            if not handled:
+                await self._do_send(sub, post)
 
     async def _notify_sub(self, sub: db.Sub) -> None:
         async with SameFuncPipelineContextManager[[int, db.Sub], None](

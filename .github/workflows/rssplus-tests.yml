@@ -1,0 +1,24 @@
+name: RSSPlus unit tests
+on:
+  pull_request:
+    paths:
+      - 'src/rssplus.py'
+      - 'src/entrypoint.py'
+      - 'src/monitor/_notifier.py'
+      - 'tests/test_rssplus.py'
+      - '.github/workflows/rssplus-tests.yml'
+  push:
+    branches:
+      - 'feature/rssplus-vps'
+jobs:
+  rssplus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Python syntax and unit tests
+        run: |
+          python -m compileall -q src/rssplus.py src/entrypoint.py src/monitor/_notifier.py
+          python -m unittest discover -s tests -p 'test_rssplus.py' -v

@@ -1,0 +1,17 @@
+# Build from this modified fork, not from the upstream Docker Hub image.
+services:
+  rssbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rssplus:local
+    container_name: rssplus
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MULTIUSER: "0"
+      RSSPLUS_CONFIG: /app/config/rssplus.json
+    volumes:
+      - ./config:/app/config
+    # No public ports required.
