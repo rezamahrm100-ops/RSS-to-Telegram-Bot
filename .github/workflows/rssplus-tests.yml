@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/rssplus.py'
+      - 'src/rssplus_ui.py'
       - 'src/entrypoint.py'
       - 'src/monitor/_notifier.py'
       - 'tests/test_rssplus.py'
@@ -20,5 +21,5 @@ jobs:
           python-version: '3.13'
       - name: Python syntax and unit tests
         run: |
-          python -m compileall -q src/rssplus.py src/entrypoint.py src/monitor/_notifier.py
-          python -m unittest discover -s tests -p 'test_rssplus.py' -v
+          python -m compileall -q src/rssplus.py src/rssplus_ui.py src/entrypoint.py src/monitor/_notifier.py
+          python -m unittest discover -s tests -p 'test_rssplus*.py' -v

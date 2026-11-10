@@ -128,6 +128,10 @@ async def pre():
     construct_command_matcher = _command_matcher.format
     construct_remote_command_matcher = partial((_command_matcher + '{target}').format, target=target_matcher)
     urls_matcher = r'(\s+(?P<url>\S+))*'
+    # Native manager-only dashboard comes before upstream command/URL handlers.
+    from . import rssplus_ui
+    rssplus_ui.install_handlers(bot)
+
     # command handler
     bot.add_event_handler(command.sub.cmd_sub,
                           events.NewMessage(pattern=construct_remote_command_matcher('/add|/sub') + urls_matcher))
