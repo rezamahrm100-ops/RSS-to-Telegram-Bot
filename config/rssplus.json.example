@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "review_chat_id": 0,
+  "default": {
+    "mode": "auto",
+    "deduplicate": true,
+    "include": [],
+    "exclude": []
+  },
+  "targets": {},
+  "webhook_url": "",
+  "webhook_token": ""
+}
