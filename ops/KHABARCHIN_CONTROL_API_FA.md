@@ -70,3 +70,61 @@ Sixteen synthetic offline tests cover authentication, host allowlisting, databas
 ## وضعیت آزمون جاری
 
 آزمون‌های چهاردهم تا شانزدهم شامل بررسی جلوگیری از عبور توکن و نبود تنظیمات RSSPlus هستند. آزمون اولیه برای جلوگیری از عبور توکن از پراکسی‌های محیطی اضافه شد. گردش‌کار GitHub-hosted فقط داده ساختگی اجرا می‌کند؛ هیچ اجرای تولیدی یا ارسال داده واقعی انجام نمی‌شود. برچسب `PASS` قبلی فقط به نسخه پیشین کد مربوط است، نه آخرین Commit.
+
+
+## Native subscription bridge — v0.2 (source implemented, production NOT enabled)
+
+The original RSStT command implementation already contains feed add/remove and
+activation/deactivation logic. New optional `src/khabarchin_ipc.py` calls those
+same functions from **inside the running bot process**, preserving its ORM,
+scheduler updates, feed validation and subscription limits. It does not write
+the SQLite database independently. `src/entrypoint.py` starts this adapter
+only if the operator explicitly enables it.
+
+**Container configuration (never commit live values):**
+- `KHABARCHIN_IPC_ENABLED=1`
+- `KHABARCHIN_MANAGED_CHANNEL_IDS=-1001234567890` (example only: replace
+  with verified and explicitly approved numeric Telegram destination IDs)
+- The existing `/app/config` volume must be mounted on the VPS host.
+- The adapter binds **no TCP port**: its socket is `/app/config/.khabarchin-ipc.sock`,
+  mode `0600`. It fails closed on a pre-existing socket rather than deleting
+  a potentially live/foreign endpoint.
+- API service: `--allow-subscription-write --allowed-channel -1001234567890`
+  as separate opt-ins. Both API and bot independently enforce target IDs.
+- The API/host process must have OS permission to connect to that socket.
+  Do not weaken permissions or expose it publicly to make the connection work.
+
+After an independently reviewed bot image deployment and a verified host-local
+backup, the owner may opt in to a **single test destination**, first verifying
+`/v1/capabilities` and a blocked cross-channel operation. Only then test
+`POST /v1/commands` with one of these strict JSON payloads:
+
+```json
+{"action":"subscribe","channel_id":-1001234567890,"url":"https://example.org/feed.xml"}
+```
+
+```json
+{"action":"deactivate","channel_id":-1001234567890,"subscription_id":123}
+```
+
+Other allowed actions are `unsubscribe` and `activate`; all require
+`subscription_id` (integer) instead of `url`. The gateway uses the existing
+VPS-local bearer, rejects unknown fields, audits only action/outcome/channel,
+and forwards over a Unix socket after explicit enablement. Native rejections
+return errors, not false success. Subscribe reuses RSStT's normal feed-fetch
+behavior and may perform network requests; the input must be trusted.
+The GitHub Issue command path refuses URL query parameters, credentials
+and private/local IP destinations because Issue comments are not a secret vault.
+
+**Not supported by this bridge:** arbitrary Telegram messages or media,
+approval/rejection of queued articles, deleting all subscriptions, unrestricted
+filesystem/SQL/SSH, generic command execution, OS installation, deployment,
+or sending bot credentials to ChatGPT. Those features would require separate
+reviewed adapters and opt-in permissions, not an unrestricted admin shell.
+
+**Important production boundary:** The current VPS service was deployed as a
+read-only API. Merely merging or updating this source branch does not enable
+these write operations on VPS, nor does it prove that the updated bot image is
+running. Rollback: disable the optional native adapter and API write flags
+individually; preserve the config/database. Production tests must verify real
+Telegram behavior and logs without uploading secrets or live DB to GitHub.
