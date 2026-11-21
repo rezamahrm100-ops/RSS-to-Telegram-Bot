@@ -188,12 +188,16 @@ def _record_file(root: Path, file: Path, kind: str) -> dict[str, Any]:
 
 def create_backup(config: Path, deployment_files: list[Path], backup_root: Path,
                   expected_db_count: int | None = None) -> Path:
+    if config.is_symlink():
+        raise BackupError("Live config root must not be a symbolic link")
     config = config.resolve(strict=True)
-    backup_root = backup_root.expanduser().resolve(strict=False)
+    backup_root = backup_root.expanduser().absolute()
+    for part in (backup_root, *backup_root.parents):
+        if part.is_symlink():
+            raise BackupError("Backup root and its parents must not be symbolic links")
+    backup_root = backup_root.resolve(strict=False)
     if backup_root == config or config in backup_root.parents:
         raise BackupError("Backup destination may not be within the live config directory")
-    if backup_root.is_symlink():
-        raise BackupError("Backup root must not be a symlink")
 
     dbs, others = inventory(config)
     if not dbs:
