@@ -9,7 +9,7 @@ import json
 import os
 import stat
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 
 def main():
@@ -28,7 +28,8 @@ def main():
         request = Request('http://127.0.0.1:%d/v1/status' % args.port,
                           headers={'Authorization': 'Bearer ' + token,
                                    'Host': '127.0.0.1:%d' % args.port})
-        with urlopen(request, timeout=5) as res:
+        # Force direct loopback; HTTP_PROXY/HTTPS_PROXY must never see the bearer token.
+        with build_opener(ProxyHandler({})).open(request, timeout=5) as res:
             data = json.loads(res.read(4096))
         if (data.get('db') != 'readable' or
                 not all(isinstance(data.get(k), int)
