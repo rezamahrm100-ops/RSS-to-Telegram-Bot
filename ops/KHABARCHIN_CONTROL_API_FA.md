@@ -128,3 +128,47 @@ these write operations on VPS, nor does it prove that the updated bot image is
 running. Rollback: disable the optional native adapter and API write flags
 individually; preserve the config/database. Production tests must verify real
 Telegram behavior and logs without uploading secrets or live DB to GitHub.
+
+## REST API v0.3 — مدیریت تنظیمات اشتراک، بدون افزونه
+
+این نسخه به API موجود اضافه می‌شود و **به‌صورت پیش‌فرض غیرفعال است**؛ انتشار کد در GitHub باعث نصب خودکار در VPS نمی‌شود.
+
+### خواندن تنظیمات یک اشتراک
+
+`GET /v1/subscriptions/{subscription_id}/settings?channel_id={channel_id}`
+
+این مسیر تنها در صورت وجود شناسهٔ کانال در `--allowed-channel` و تعلق اشتراک به همان کانال، گزینه‌های تنظیمات را به‌شکل JSON برمی‌گرداند. اطلاعات محرمانهٔ تلگرام و نشانی فید در این خروجی وجود ندارد. API همچنان فقط روی `127.0.0.1` کار می‌کند.
+
+### تنظیمات با عملیات نوع‌دار
+
+`POST /v1/commands` با توکن محلی و `--allow-subscription-write`، فقط برای کانال مجاز:
+
+```json
+{"action":"set_interval","channel_id":-1001234567890,"subscription_id":123,"value":15}
+```
+
+```json
+{"action":"set_title","channel_id":-1001234567890,"subscription_id":123,"value":"عنوان دلخواه"}
+```
+
+```json
+{"action":"set_hashtags","channel_id":-1001234567890,"subscription_id":123,"value":"#علم #خبر"}
+```
+
+```json
+{"action":"set_length_limit","channel_id":-1001234567890,"subscription_id":123,"value":1024}
+```
+
+```json
+{"action":"set_option","channel_id":-1001234567890,"subscription_id":123,"field":"display_media","value":0}
+```
+
+مقادیر مجاز هر گزینهٔ شمارشی مطابق تنظیمات هستهٔ RSStT و مستندات OpenAPI است. `null` برای بازنشانی عنوان/هشتگ و فاصلهٔ بررسی مجاز است؛ مقدار `-100` در گزینه‌های شمارشی و محدودیت طول به‌معنای ارث‌بری تنظیم پیش‌فرض است. فاصلهٔ بررسی به دقیقه است و هستهٔ ربات همچنان حداقل مجاز خودش را اعمال می‌کند.
+
+این API مستقیماً در پایگاه دادهٔ زنده از یک فرایند جداگانه نمی‌نویسد؛ فرمان از گذرگاه HTTP محلی به سوکت خصوصی در همان فرایند ربات می‌رسد. افزودن فید و تغییر فاصلهٔ بررسی از توابع آمادهٔ هسته استفاده می‌کنند؛ گزینه‌های شمارشی با اعتبارسنجی مطابق مقادیر اصلی و با ORM خود ربات ذخیره می‌شوند.
+
+### مرزهای نسخهٔ فعلی
+
+- هنوز واردکردن/خارج‌کردن OPML، صف تأیید/رد اخبار، اجرای تست انتشار و تنظیمات پیش‌فرض کاربران از API پوشش کامل ندارند.
+- مسیر GitHub/WICC فعلاً فقط زیرمجموعه‌ای از عملیات را به ChatGPT ارائه می‌کند؛ پیاده‌سازی REST API به‌تنهایی مساوی قابلیت اجرای مستقیم تمام endpointها از این گفت‌وگو نیست.
+- پیش از فعال‌سازی تولید: بکاپ **روی همان VPS**، تطبیق نسخهٔ دقیق کانتینر، آزمون رد کانال غیرمجاز، و آزمون واقعی روی کانال آزمایشی لازم است.
