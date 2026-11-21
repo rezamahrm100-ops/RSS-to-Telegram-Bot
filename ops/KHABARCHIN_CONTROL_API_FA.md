@@ -40,6 +40,12 @@ python3 ops/khabarchin_control_api.py \
 
 To enable rule updates **after authorization and testing**, add `--allow-rules-write`. The caller first GETs `/v1/rules`, obtains its `ETag` and sends that value in `If-Match` on PUT, alongside a JSON policy such as `{"mode":"review","include":["science"],"exclude":["advertisement"]}`. Updates atomically replace the existing RSSPlus config without removing webhook settings. Minimal event + outcome audit records are stored locally at `.khabarchin-api-audit.jsonl`, with no token or request body.
 
+## RSStT-only mode (RSSPlus not configured)
+
+If the bot's actual persistent `/app/config` directory has **no** `rssplus.json` and no `rssplus.sqlite3`, that is a valid upstream RSStT-only installation. On API v0.1, `GET /v1/status` still reads the verified upstream SQLite and reports `rssplus_configured: false` and `rssplus_enabled: false`. `GET /v1/rules` reports empty disabled policies without an ETag; `GET /v1/reviews` reports an empty unavailable queue. Rule updates NEVER create an RSSPlus config; they fail closed.
+
+Do not synthesize or enable RSSPlus merely to run the base status API. Any malformed, oversized or symlinked *present* RSSPlus config still fails closed. The owner-only WICC preflight must first establish the exact active SQLite default path and confirm no conflicting DB/env override.
+
 ## Backups: local VPS only
 
 **Owner decision:** backups **must stay on the same VPS** at `/var/backups/khabarchin/rsstt`; **no external/cloud/GitHub backup**. The existing backup utility in PR #3 must be reviewed and applied separately. This API neither runs backups nor uploads them. Total VPS/disk failure remains an accepted risk.
@@ -50,7 +56,7 @@ To enable rule updates **after authorization and testing**, add `--allow-rules-w
 python3 -m unittest discover -s tests -p 'test_khabarchin_control_api.py' -v
 ```
 
-Fourteen synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. Fourteen synthetic tests are defined; the current source revision has no GitHub Actions PASS evidence, and local fixture PASS is **not** VPS deployment proof.
+Sixteen synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. Sixteen synthetic tests are defined; the current source revision has no GitHub Actions PASS evidence, and local fixture PASS is **not** VPS deployment proof.
 
 ## Release gates
 
@@ -63,4 +69,4 @@ Fourteen synthetic offline tests cover authentication, host allowlisting, databa
 
 ## وضعیت آزمون جاری
 
-آزمون چهاردهم برای بررسی جلوگیری از عبور توکن از پراکسی‌های محیطی اضافه شد. گردش‌کار GitHub-hosted فقط داده ساختگی اجرا می‌کند؛ هیچ اجرای تولیدی یا ارسال داده واقعی انجام نمی‌شود. برچسب `PASS` قبلی فقط به نسخه پیشین کد مربوط است، نه آخرین Commit.
+آزمون‌های چهاردهم تا شانزدهم شامل بررسی جلوگیری از عبور توکن و نبود تنظیمات RSSPlus هستند. آزمون اولیه برای جلوگیری از عبور توکن از پراکسی‌های محیطی اضافه شد. گردش‌کار GitHub-hosted فقط داده ساختگی اجرا می‌کند؛ هیچ اجرای تولیدی یا ارسال داده واقعی انجام نمی‌شود. برچسب `PASS` قبلی فقط به نسخه پیشین کد مربوط است، نه آخرین Commit.
