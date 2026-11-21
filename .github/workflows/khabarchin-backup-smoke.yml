@@ -1,0 +1,22 @@
+name: Khabarchin backup offline smoke test
+
+on:
+  pull_request:
+    paths:
+      - 'ops/rsstt_backup.py'
+      - 'ops/README_FA.md'
+      - 'tests/test_khabarchin_backup.py'
+      - '.github/workflows/khabarchin-backup-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-synthetic-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test SQLite snapshots with fake data (never contacts VPS)
+        run: python3 -m unittest discover -s tests -p 'test_khabarchin_backup.py' -v
