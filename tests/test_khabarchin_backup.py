@@ -76,6 +76,21 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(mod.BackupError):
             mod.create_backup(self.config, [], self.root / "backups")
 
+    def test_explicit_db_url_must_match_live_volume(self):
+        mod._validate_sqlite_config_url("sqlite:/app/config/active.db", self.config)
+        mod._validate_sqlite_config_url("sqlite:////app/config/old.sqlite3", self.config)
+        with self.assertRaises(mod.BackupError):
+            mod._validate_sqlite_config_url("sqlite:/app/config/missing.sqlite3", self.config)
+
+    def test_dotenv_overrides_must_not_point_to_external_database(self):
+        envfile = self.config / ".env"
+        envfile.write_text("TOKEN=FAKE\\nDATABASE_URL=postgres://user:fake@remote/db\\n")
+        with self.assertRaises(mod.BackupError):
+            mod._check_local_dotenv(envfile, self.config)
+        envfile.write_text("DATABASE_URL=sqlite:/outside/config.db\\n")
+        with self.assertRaises(mod.BackupError):
+            mod._check_local_dotenv(envfile, self.config)
+
     def test_mountinfo_selects_longest_matching_mount(self):
         table = ("1 0 0:1 / / rw - ext4 /dev/vda1 rw\n"
                  "2 1 0:2 / /var/backups rw - nfs4 server:/archive rw\n")
