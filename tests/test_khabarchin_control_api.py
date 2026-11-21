@@ -26,9 +26,9 @@ class ApiTests(unittest.TestCase):
         self.db = self.config / 'db.sqlite3'
         con = sqlite3.connect(self.db)
         con.execute('CREATE TABLE feed(id INTEGER PRIMARY KEY, title TEXT, link TEXT, state INTEGER, error_count INTEGER)')
-        con.execute('CREATE TABLE sub(id INTEGER PRIMARY KEY, user_id INTEGER, feed_id INTEGER, state INTEGER, title TEXT)')
+        con.execute('CREATE TABLE sub(id INTEGER PRIMARY KEY, user_id INTEGER, feed_id INTEGER, state INTEGER, title TEXT, tags TEXT, interval INTEGER, notify INTEGER, send_mode INTEGER, length_limit INTEGER, link_preview INTEGER, display_author INTEGER, display_via INTEGER, display_title INTEGER, display_entry_tags INTEGER, style INTEGER, display_media INTEGER)')
         con.execute('INSERT INTO feed VALUES(1, "Scientific feed", "https://example.org/feed", 1, 0)')
-        con.execute('INSERT INTO sub VALUES(1, -10001, 1, 1, "Research")')
+        con.execute('INSERT INTO sub(id,user_id,feed_id,state,title) VALUES(1, -10001, 1, 1, "Research")')
         con.commit()
         con.close()
         con = sqlite3.connect(self.config / 'rssplus.sqlite3')
@@ -273,6 +273,86 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
         audit = (self.config / '.khabarchin-api-audit.jsonl').read_text()
         self.assertIn('subscriptions.activate', audit)
+
+
+    def test_subscription_settings_scoped_read(self):
+        code, _, _ = self.request('GET', '/v1/subscriptions/1/settings?channel_id=-10001')
+        self.assertEqual(code, 403)
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('GET', '/v1/subscriptions/1/settings?channel_id=-10001')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['settings']['title'], 'Research')
+        self.assertEqual(data['settings']['channel_id'], -10001)
+        self.assertNotIn('feed_link', data['settings'])
+        self.assertEqual(self.request('GET', '/v1/subscriptions/1/settings?channel_id=-30001')[0], 403)
+        self.assertEqual(self.request('GET', '/v1/subscriptions/999/settings?channel_id=-10001')[0], 404)
+        self.assertEqual(self.request('GET', '/v1/subscriptions/1/settings')[0], 400)
+
+    def test_settings_strict_input_validation_and_absent_native(self):
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        base = {'channel_id': -10001, 'subscription_id': 1}
+        invalid = [
+            {'action': 'set_interval', 'value': True},
+            {'action': 'set_interval', 'value': -3},
+            {'action': 'set_length_limit', 'value': 4097},
+            {'action': 'set_title', 'value': 'hello\nworld'},
+            {'action': 'set_hashtags', 'value': 'X' * 256},
+            {'action': 'set_option', 'field': 'token', 'value': 1},
+            {'action': 'set_option', 'field': 'display_media', 'value': 9000},
+            {'action': 'set_option', 'field': 'display_media', 'value': True},
+            {'action': 'set_title', 'value': 'Fine', 'extra': 4},
+        ]
+        for item in invalid:
+            with self.subTest(item=item):
+                code, _, _ = self.request('POST', '/v1/commands', {**base, **item})
+                self.assertEqual(code, 400)
+        good = {'action': 'set_interval', **base, 'value': 15}
+        self.assertEqual(self.request('POST', '/v1/commands', good)[0], 503)
+        self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
+
+    def test_settings_ipc_receipts_fail_closed_on_mismatch(self):
+        import socketserver
+
+        class Stub(socketserver.BaseRequestHandler):
+            def handle(self):
+                wire = b''
+                while b'\r\n\r\n' not in wire:
+                    wire += self.request.recv(4096)
+                head, body = wire.split(b'\r\n\r\n', 1)
+                length = int(next(
+                    row.partition(b':')[2].strip()
+                    for row in head.split(b'\r\n') if row.lower().startswith(b'content-length:')
+                ))
+                while len(body) < length:
+                    body += self.request.recv(4096)
+                request = json.loads(body[:length])
+                answer = {'success': True, 'subscription_id': request['subscription_id'],
+                          'field': 'interval' if request['value'] == 15 else 'title',
+                          'value': request['value']}
+                data = json.dumps(answer).encode()
+                self.request.sendall(
+                    b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                    + b'Content-Length: ' + str(len(data)).encode()
+                    + b'\r\nConnection: close\r\n\r\n' + data)
+
+        ipc = self.config / '.khabarchin-ipc.sock'
+        backend = socketserver.UnixStreamServer(str(ipc), Stub)
+        self.addCleanup(backend.server_close)
+        thread = threading.Thread(target=backend.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(backend.shutdown)
+        self.addCleanup(thread.join, 2)
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        base = {'action': 'set_interval', 'channel_id': -10001,
+                'subscription_id': 1}
+        code, data, _ = self.request('POST', '/v1/commands', {**base, 'value': 15})
+        self.assertEqual(code, 200)
+        self.assertEqual((data['field'], data['value']), ('interval', 15))
+        code, data, _ = self.request('POST', '/v1/commands', {**base, 'value': 30})
+        self.assertEqual(code, 502)
+        self.assertEqual(data['error'], 'native settings response mismatch')
 
 if __name__ == '__main__':
     unittest.main()
