@@ -84,6 +84,16 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn('SECRET_SHOULD_NOT_LEAK', json.dumps(data))
         self.assertTrue(etag.startswith('"'))
 
+    def test_nested_unknown_fields_are_never_returned(self):
+        original = json.loads(self.config_file.read_text())
+        original['default']['future_secret'] = 'SECRET_NESTED'
+        original['targets']['-10001'] = {'mode':'auto', 'internal_token':'SECRET_TARGET'}
+        self.config_file.write_text(json.dumps(original))
+        code, data, _ = self.request('GET', '/v1/rules')
+        self.assertEqual(code, 200)
+        self.assertNotIn('SECRET_NESTED', json.dumps(data))
+        self.assertNotIn('SECRET_TARGET', json.dumps(data))
+
     def test_review_redacts_payload(self):
         _, data, _ = self.request('GET', '/v1/reviews')
         self.assertNotIn('PRIVATE_BODY', json.dumps(data))
