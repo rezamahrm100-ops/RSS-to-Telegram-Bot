@@ -236,11 +236,11 @@ class ApiTests(unittest.TestCase):
         class Stub(socketserver.BaseRequestHandler):
             def handle(self):
                 wire = b''
-                while b'\\r\\n\\r\\n' not in wire:
+                while b'\r\n\r\n' not in wire:
                     wire += self.request.recv(4096)
-                head, body = wire.split(b'\\r\\n\\r\\n', 1)
+                head, body = wire.split(b'\r\n\r\n', 1)
                 length = 0
-                for line in head.split(b'\\r\\n'):
+                for line in head.split(b'\r\n'):
                     if line.lower().startswith(b'content-length:'):
                         length = int(line.partition(b':')[2].strip())
                 while len(body) < length:
@@ -249,9 +249,9 @@ class ApiTests(unittest.TestCase):
                 assert parsed == {'action': 'activate', 'channel_id': -10001,
                                   'subscription_id': 1}
                 answer = json.dumps({'success': True, 'subscription_id': 1}).encode()
-                self.request.sendall(b'HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n'
+                self.request.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
                                      + b'Content-Length: ' + str(len(answer)).encode()
-                                     + b'\\r\\nConnection: close\\r\\n\\r\\n' + answer)
+                                     + b'\r\nConnection: close\r\n\r\n' + answer)
 
         ipc = self.config / '.khabarchin-ipc.sock'
         backend = socketserver.UnixStreamServer(str(ipc), Stub)
