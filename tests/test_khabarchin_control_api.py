@@ -13,6 +13,11 @@ spec = importlib.util.spec_from_file_location('control_api', BASE / 'ops/khabarc
 api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(api)
 
+probe_spec = importlib.util.spec_from_file_location(
+    'status_probe', BASE / 'ops/khabarchin_status_probe.py')
+probe = importlib.util.module_from_spec(probe_spec)
+probe_spec.loader.exec_module(probe)
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -135,6 +140,26 @@ class ApiTests(unittest.TestCase):
 
     def test_host_rebinding_blocked(self):
         self.assertEqual(self.request('GET', '/v1/health', headers={'Host': 'attacker.example'})[0], 403)
+
+    def test_status_probe_ignores_http_proxy(self):
+        import contextlib
+        import io
+        import os
+        import sys
+        from unittest.mock import patch
+
+        token_file = self.config / 'owner.token'
+        token_file.write_bytes(self.token)
+        token_file.chmod(0o600)
+        out = io.StringIO()
+        with patch.dict(os.environ, {'HTTP_PROXY': 'http://192.0.2.1:3128',
+                                     'http_proxy': 'http://192.0.2.1:3128',
+                                     'NO_PROXY': '', 'no_proxy': ''}):
+            with patch.object(sys, 'argv', ['probe', '--token-file', str(token_file),
+                                            '--port', str(self.server.server_port)]):
+                with contextlib.redirect_stdout(out):
+                    probe.main()
+        self.assertIn('KHABARCHIN_API_STATUS=PASS_READ_ONLY', out.getvalue())
 
     def test_missing_db_no_false_positive(self):
         self.db.unlink()
