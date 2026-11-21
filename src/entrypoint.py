@@ -264,8 +264,11 @@ async def pre():
     bot.add_event_handler(command.misc.cmd_start,
                           command.utils.GroupMigratedAction())
 
-    # Explicit opt-in: local Unix socket; never a network-exposed API.
-    await khabarchin_ipc.start()
+    # Optional control API must never prevent the RSS bot from starting.
+    try:
+        await khabarchin_ipc.start()
+    except Exception:
+        logger.error('Khabarchin control adapter unavailable; RSS bot remains operational', exc_info=True)
 
 
 async def lazy():
@@ -298,7 +301,10 @@ async def lazy():
 
 async def post():
     logger.info('Exiting gracefully...')
-    await khabarchin_ipc.stop()
+    try:
+        await khabarchin_ipc.stop()
+    except Exception:
+        logger.error('Khabarchin control adapter cleanup failed', exc_info=True)
     tasks = [
         asyncio.shield(loop.create_task(db.close())),
         loop.create_task(tgraph.close()),
