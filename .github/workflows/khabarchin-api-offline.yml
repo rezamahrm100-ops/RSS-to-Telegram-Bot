@@ -1,0 +1,36 @@
+name: Khabarchin Control API isolated PR tests
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'ops/khabarchin_control_api.py'
+      - 'ops/khabarchin_status_probe.py'
+      - 'tests/test_khabarchin_control_api.py'
+      - 'ops/openapi-khabarchin-control-v1.json'
+      - '.github/workflows/khabarchin-api-offline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Source compiles
+        run: python -m py_compile ops/khabarchin_control_api.py ops/khabarchin_status_probe.py
+      - name: Validate API specification
+        run: python -m json.tool ops/openapi-khabarchin-control-v1.json > /dev/null
+      - name: Run synthetic fixture tests (never live SQLite)
+        run: python -m unittest discover -s tests -p test_khabarchin_control_api.py -v
