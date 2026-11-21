@@ -423,8 +423,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(502, "native response invalid")
                 if response.status == 200 and outcome.get("success") is not True:
                     raise ApiError(502, "native response invalid")
-                self.server.audit(event, "applied" if response.status == 200 else "rejected",
-                                  str(channel))
                 if response.status == 200:
                     output = {"success": True, "action": action, "channel_id": channel,
                               "subscription_id": outcome.get("subscription_id")}
@@ -438,7 +436,9 @@ class Handler(BaseHTTPRequestHandler):
                             raise ApiError(502, "native settings response mismatch")
                         output["field"] = expected_field
                         output["value"] = outcome.get("value")
+                    self.server.audit(event, "applied", str(channel))
                     return self._json(200, output)
+                self.server.audit(event, "rejected", str(channel))
                 return self._json(response.status, {"error": "native operation rejected"})
             except (OSError, http.client.HTTPException, TimeoutError):
                 raise ApiError(503, "native bot control unavailable") from None
