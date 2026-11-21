@@ -68,6 +68,13 @@ def _read_config(path: Path) -> tuple[dict, str]:
     return config, '"' + hashlib.sha256(data).hexdigest() + '"'
 
 
+def _public_policy(value) -> dict:
+    """Never disclose unknown/future secret-bearing RSSPlus policy fields."""
+    if not isinstance(value, dict):
+        return {}
+    return {k: value[k] for k in ("mode", "deduplicate", "include", "exclude") if k in value}
+
+
 def _validate_rule(value) -> dict:
     if not isinstance(value, dict) or not value or set(value) - ALLOWED_RULE_FIELDS:
         raise ApiError(400, "invalid or empty rule object")
@@ -223,8 +230,14 @@ class Handler(BaseHTTPRequestHandler):
                     "ORDER BY created_at DESC LIMIT ?", (self._limit(),))})
             if path == "/v1/rules":
                 cfg, etag = _read_config(self.server.config_file)
+                targets = cfg.get("targets", {})
+                if not isinstance(targets, dict):
+                    targets = {}
+                public_targets = {str(k): _public_policy(v) for k, v in targets.items()
+                                  if str(k).lstrip("-").isdigit()}
                 return self._json(200, {"enabled": cfg.get("enabled") is True,
-                    "default": cfg.get("default", {}), "targets": cfg.get("targets", {})}, etag)
+                    "default": _public_policy(cfg.get("default")),
+                    "targets": public_targets}, etag)
             raise ApiError(404, "unknown endpoint")
         except ApiError as exc:
             self._json(exc.code, {"error": exc.message})
