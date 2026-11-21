@@ -24,17 +24,25 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 MAX_REQUEST_BYTES = 8192
 MAX_CONFIG_BYTES = 262144
 WRITE_LOCK = threading.Lock()
 RULE_PATH = re.compile(r"/v1/rules/(-?\d{1,20})\Z")
 SUB_SETTING_PATH = re.compile(r"/v1/subscriptions/([1-9][0-9]{0,18})/settings\Z")
+CHANNEL_DEFAULTS_PATH = re.compile(r"/v1/channels/(-[1-9][0-9]{0,18})/defaults\Z")
+CHANNEL_SUMMARY_PATH = re.compile(r"/v1/channels/(-[1-9][0-9]{0,18})/summary\Z")
 ALLOWED_RULE_FIELDS = frozenset({"mode", "deduplicate", "include", "exclude"})
 NATIVE_ACTIONS = frozenset({
     "subscribe", "unsubscribe", "activate", "deactivate",
     "set_title", "set_hashtags", "set_interval", "set_length_limit", "set_option",
+    "set_default_interval", "set_default_length_limit", "set_default_option",
+    "activate_all", "deactivate_all", "reset_subscription",
 })
+DEFAULT_ACTIONS = frozenset({
+    "set_default_interval", "set_default_length_limit", "set_default_option",
+})
+BULK_ACTIONS = frozenset({"activate_all", "deactivate_all"})
 SETTING_ACTIONS = frozenset({
     "set_title", "set_hashtags", "set_interval", "set_length_limit", "set_option",
 })
@@ -73,6 +81,33 @@ def _valid_setting_action(body: dict) -> bool:
                 and all(ord(ch) >= 32 and ord(ch) != 127 for ch in item)))
     return False
 
+
+
+def _valid_default_action(body):
+    action = body["action"]
+    if action == "set_default_option":
+        field = body.get("field")
+        return (set(body) == {"action", "channel_id", "field", "value"}
+                and isinstance(field, str) and field in SETTING_CHOICES
+                and type(body.get("value")) is int
+                and body["value"] in SETTING_CHOICES[field])
+    if set(body) != {"action", "channel_id", "value"}:
+        return False
+    value = body.get("value")
+    if action == "set_default_interval":
+        return value is None or (type(value) is int and 1 <= value <= 1440)
+    if action == "set_default_length_limit":
+        return type(value) is int and 0 <= value <= 4096
+    return False
+
+
+def _valid_bulk_action(body):
+    action = body["action"]
+    return (set(body) == {"action", "channel_id", "expected_count", "confirm"}
+            and type(body.get("expected_count")) is int
+            and 0 <= body["expected_count"] <= 10000
+            and body.get("confirm") == ("ACTIVATE_ALL" if action == "activate_all"
+                                        else "DEACTIVATE_ALL"))
 
 
 class ApiError(Exception):
@@ -292,13 +327,17 @@ class Handler(BaseHTTPRequestHandler):
                                         "bot_running": "not_checked"})
             if path == "/v1/capabilities":
                 return self._json(200, {"read": ["health", "status", "feeds", "subscriptions",
-                                                 "subscriptions.settings", "rules", "reviews"],
+                                                 "subscriptions.settings", "channels.defaults",
+                                                 "channels.summary", "rules", "reviews"],
                                         "write": ((["rules.update"] if self.server.allow_rules_write else [])
                                                    + (["subscriptions.subscribe", "subscriptions.unsubscribe",
                                                        "subscriptions.activate", "subscriptions.deactivate",
                                                         "subscriptions.set_title", "subscriptions.set_hashtags",
                                                         "subscriptions.set_interval", "subscriptions.set_length_limit",
-                                                        "subscriptions.set_option"]
+                                                        "subscriptions.set_option", "channels.set_default_interval",
+                                                        "channels.set_default_length_limit", "channels.set_default_option",
+                                                        "subscriptions.activate_all", "subscriptions.deactivate_all",
+                                                        "subscriptions.reset"]
                                                       if self.server.allow_subscription_write else [])),
                                         "unsupported": ["shell", "sql", "arbitrary_file", "deploy", "publish"]})
             if path == "/v1/status":
@@ -321,6 +360,29 @@ class Handler(BaseHTTPRequestHandler):
                     "f.title AS feed_title,f.link AS feed_link FROM sub AS s "
                     "JOIN feed AS f ON s.feed_id=f.id ORDER BY s.id DESC LIMIT ?",
                     (self._limit(),))})
+            match = CHANNEL_DEFAULTS_PATH.fullmatch(path)
+            if match:
+                channel = int(match.group(1))
+                if channel not in self.server.allowed_channels:
+                    raise ApiError(403, "channel not approved")
+                rows = _sqlite_read(self.server.db,
+                    "SELECT id AS channel_id,state,lang,sub_limit,interval,notify,send_mode,"
+                    "length_limit,link_preview,display_author,display_via,display_title,"
+                    "display_entry_tags,style,display_media FROM user WHERE id=? LIMIT 1",
+                    (channel,))
+                if not rows:
+                    raise ApiError(404, "channel not found")
+                return self._json(200, {"defaults": rows[0]})
+            match = CHANNEL_SUMMARY_PATH.fullmatch(path)
+            if match:
+                channel = int(match.group(1))
+                if channel not in self.server.allowed_channels:
+                    raise ApiError(403, "channel not approved")
+                rows = _sqlite_read(self.server.db,
+                    "SELECT COUNT(*) AS total_count,"
+                    "COALESCE(SUM(CASE WHEN state=1 THEN 1 ELSE 0 END),0) AS active_count "
+                    "FROM sub WHERE user_id=?", (channel,))
+                return self._json(200, {"channel_id": channel, **rows[0]})
             match = SUB_SETTING_PATH.fullmatch(path)
             if match:
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
@@ -391,6 +453,12 @@ class Handler(BaseHTTPRequestHandler):
                         or not isinstance(body.get("url"), str)
                         or not 8 <= len(body["url"]) <= 1024):
                     raise ApiError(400, "invalid subscription command")
+            elif action in DEFAULT_ACTIONS:
+                if not _valid_default_action(body):
+                    raise ApiError(400, "invalid default setting")
+            elif action in BULK_ACTIONS:
+                if not _valid_bulk_action(body):
+                    raise ApiError(400, "invalid bulk confirmation")
             else:
                 if (type(body.get("subscription_id")) is not int
                         or not 0 < body["subscription_id"] < 2**63):
@@ -426,16 +494,34 @@ class Handler(BaseHTTPRequestHandler):
                 if response.status == 200:
                     output = {"success": True, "action": action, "channel_id": channel,
                               "subscription_id": outcome.get("subscription_id")}
-                    if action in SETTING_ACTIONS:
-                        expected_field = body["field"] if action == "set_option" else {
+                    if action in SETTING_ACTIONS | DEFAULT_ACTIONS:
+                        expected_field = body["field"] if action in ("set_option", "set_default_option") else {
                             "set_title": "title", "set_hashtags": "tags",
-                            "set_interval": "interval", "set_length_limit": "length_limit"
+                            "set_interval": "interval", "set_length_limit": "length_limit",
+                            "set_default_interval": "interval",
+                            "set_default_length_limit": "length_limit",
                         }[action]
                         if (outcome.get("field") != expected_field or
-                                outcome.get("subscription_id") != body["subscription_id"]):
+                                (action in SETTING_ACTIONS
+                                 and outcome.get("subscription_id") != body["subscription_id"])
+                                or (action in DEFAULT_ACTIONS
+                                    and outcome.get("channel_id") != channel)):
                             raise ApiError(502, "native settings response mismatch")
                         output["field"] = expected_field
+                        # Free-text values only traverse localhost; GitHub runner redacts.
                         output["value"] = outcome.get("value")
+                    if action in BULK_ACTIONS:
+                        count = outcome.get("total_count")
+                        affected = outcome.get("affected_count")
+                        if (type(count) is not int or count != body["expected_count"]
+                                or type(affected) is not int or not 0 <= affected <= count):
+                            raise ApiError(502, "native bulk response mismatch")
+                        output["total_count"], output["affected_count"] = count, affected
+                    if action == "reset_subscription":
+                        if (outcome.get("subscription_id") != body["subscription_id"]
+                                or not isinstance(outcome.get("reset_fields"), list)):
+                            raise ApiError(502, "native reset response mismatch")
+                        output["reset_fields"] = outcome["reset_fields"]
                     self.server.audit(event, "applied", str(channel))
                     return self._json(200, output)
                 self.server.audit(event, "rejected", str(channel))
