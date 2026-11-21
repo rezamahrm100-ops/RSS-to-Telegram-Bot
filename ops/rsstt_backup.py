@@ -143,6 +143,46 @@ def inventory(config: Path) -> tuple[list[Path], list[Path]]:
     return sorted(dbs), sorted(regular)
 
 
+def _backing_fs(path: Path, mountinfo: str) -> str:
+    """Find the filesystem type of the longest matching Linux mount."""
+    selected = None
+    length = -1
+    for line in mountinfo.splitlines():
+        left, separator, right = line.partition(" - ")
+        if not separator:
+            continue
+        fields = left.split()
+        details = right.split()
+        if len(fields) < 5 or not details:
+            continue
+        # Linux mountinfo escapes spaces and backslashes in mount point paths.
+        mount = fields[4].replace("\\040", " ").replace("\\134", "\\")
+        mountpath = Path(mount)
+        if (path == mountpath or mountpath in path.parents) and len(mount) > length:
+            selected = details[0].lower()
+            length = len(mount)
+    if selected is None:
+        raise BackupError("Unable to verify destination filesystem")
+    return selected
+
+
+def _assert_local_storage(path: Path) -> None:
+    """Refuse known network/remote and volatile mounts, not merely remote URLs."""
+    try:
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BackupError("Cannot inspect local mount information") from exc
+    fs = _backing_fs(path.resolve(strict=True), mountinfo)
+    disallowed = {
+        "nfs", "nfs4", "cifs", "smb3", "9p", "ceph", "glusterfs",
+        "lustre", "davfs", "sshfs", "fuse.sshfs", "fuse.rclone",
+        "fuse.s3fs", "fuse.gcsfuse", "fuse.goofys", "fuse.davfs",
+        "tmpfs", "ramfs", "devtmpfs",
+    }
+    if fs in disallowed or fs.startswith("fuse.") or fs.startswith("nfs"):
+        raise BackupError("Backup destination is not confirmed local persistent storage")
+
+
 def _private_file_copy(source: Path, target: Path) -> None:
     if source.is_symlink() or not source.is_file():
         raise BackupError("Deployment file is missing or symlinked")
@@ -207,6 +247,7 @@ def create_backup(config: Path, deployment_files: list[Path], backup_root: Path,
 
     backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(backup_root, 0o700)
+    _assert_local_storage(backup_root)
     tmp = Path(tempfile.mkdtemp(prefix=".rsstt-incomplete-", dir=backup_root))
     os.chmod(tmp, 0o700)
     records: list[dict[str, Any]] = []
