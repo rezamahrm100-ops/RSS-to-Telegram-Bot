@@ -84,10 +84,10 @@ class BackupTests(unittest.TestCase):
 
     def test_dotenv_overrides_must_not_point_to_external_database(self):
         envfile = self.config / ".env"
-        envfile.write_text("TOKEN=FAKE\\nDATABASE_URL=postgres://user:fake@remote/db\\n")
+        envfile.write_text("TOKEN=FAKE\nDATABASE_URL=postgres://user:fake@remote/db\n")
         with self.assertRaises(mod.BackupError):
             mod._check_local_dotenv(envfile, self.config)
-        envfile.write_text("DATABASE_URL=sqlite:/outside/config.db\\n")
+        envfile.write_text("DATABASE_URL=sqlite:/outside/config.db\n")
         with self.assertRaises(mod.BackupError):
             mod._check_local_dotenv(envfile, self.config)
 
