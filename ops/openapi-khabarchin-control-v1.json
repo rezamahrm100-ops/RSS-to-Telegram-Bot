@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Khabarchin RSStT Control API",
-    "version": "0.3.0",
-    "description": "Owner-only localhost REST Control API: read status/feeds/subscriptions/rules/reviews, opt-in native subscription lifecycle and deterministic per-subscription settings. Writes are disabled by default; strict channel allowlist, live RSStT Unix IPC. No generic shell, SQL, filesystem or Telegram publishing."
+    "version": "0.4.0",
+    "description": "Owner-scoped loopback REST API. Reads status, feeds, subscriptions, settings, per-channel defaults and counts. Optional native actions via private Unix IPC: subscription lifecycle, formatting, destination defaults, confirm-scoped bulk state changes and reset. All writes OFF by default; not a generic executor. Does not yet implement OPML transfer, manual media publish or complete RSSPlus moderation."
   },
   "servers": [
     {
@@ -302,6 +302,172 @@
               }
             },
             "description": "See x-khabarchin-enum-values (each option also accepts -100=inherit)."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "value"
+            ],
+            "properties": {
+              "action": {
+                "const": "set_default_interval"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1440
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "value"
+            ],
+            "properties": {
+              "action": {
+                "const": "set_default_length_limit"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "value": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4096
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "field",
+              "value"
+            ],
+            "properties": {
+              "action": {
+                "const": "set_default_option"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "field": {
+                "type": "string",
+                "enum": [
+                  "notify",
+                  "send_mode",
+                  "link_preview",
+                  "display_media",
+                  "display_author",
+                  "display_via",
+                  "display_title",
+                  "display_entry_tags",
+                  "style"
+                ]
+              },
+              "value": {
+                "type": "integer",
+                "description": "See x-khabarchin-enum-values. For defaults -100 is NOT permitted."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "expected_count",
+              "confirm"
+            ],
+            "properties": {
+              "action": {
+                "const": "activate_all"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "expected_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "confirm": {
+                "const": "ACTIVATE_ALL"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "expected_count",
+              "confirm"
+            ],
+            "properties": {
+              "action": {
+                "const": "deactivate_all"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "expected_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "confirm": {
+                "const": "DEACTIVATE_ALL"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "subscription_id"
+            ],
+            "properties": {
+              "action": {
+                "const": "reset_subscription"
+              },
+              "channel_id": {
+                "type": "integer",
+                "description": "Explicit allowlisted negative Telegram destination"
+              },
+              "subscription_id": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
           }
         ],
         "x-khabarchin-enum-values": {
@@ -560,8 +726,8 @@
     "/v1/commands": {
       "post": {
         "operationId": "runNativeSubscriptionCommand",
-        "summary": "Owner-only opt-in native subscription lifecycle and settings operations",
-        "description": "Subscription CRUD plus set_title/set_hashtags/set_interval/set_length_limit/set_option, with strict schema and explicit channel allowlist; writes occur only inside running RSStT process via Unix IPC. No arbitrary field changes.",
+        "summary": "Opt-in native RSStT subscription, posting-default, reset and count-confirmed bulk operations",
+        "description": "No arbitrary command, SQL, scripting or public network listener. All writes require two separate opt-in switches in the gateway and native process. Bulk state operations require explicit uppercase confirmation and matching current total count. A count race after validation cannot be excluded without further locking.",
         "requestBody": {
           "required": true,
           "content": {
@@ -586,7 +752,7 @@
             "description": "Subscription not found"
           },
           "409": {
-            "description": "Subscription rejected or unchanged"
+            "description": "Feed unchanged or bulk subscription count mismatch"
           },
           "503": {
             "description": "Bot IPC unavailable"
@@ -629,6 +795,57 @@
           },
           "404": {
             "description": "Subscription does not belong to target channel"
+          }
+        }
+      }
+    },
+    "/v1/channels/{channel_id}/defaults": {
+      "get": {
+        "operationId": "readChannelDefaults",
+        "summary": "Owner-allowlisted channel's default RSS posting settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only default settings without admin IDs or secrets"
+          },
+          "403": {
+            "description": "Channel not allowed"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      }
+    },
+    "/v1/channels/{channel_id}/summary": {
+      "get": {
+        "operationId": "readChannelSubscriptionCounts",
+        "summary": "Scope-safe counts used for explicit bulk command confirmation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Total and active subscription counts for one allowed channel"
+          },
+          "403": {
+            "description": "Channel not allowed"
           }
         }
       }
