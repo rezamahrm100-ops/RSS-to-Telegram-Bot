@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 MAX_REQUEST_BYTES = 8192
 MAX_CONFIG_BYTES = 262144
 WRITE_LOCK = threading.Lock()
@@ -32,13 +32,16 @@ RULE_PATH = re.compile(r"/v1/rules/(-?\d{1,20})\Z")
 SUB_SETTING_PATH = re.compile(r"/v1/subscriptions/([1-9][0-9]{0,18})/settings\Z")
 CHANNEL_DEFAULTS_PATH = re.compile(r"/v1/channels/(-[1-9][0-9]{0,18})/defaults\Z")
 CHANNEL_SUMMARY_PATH = re.compile(r"/v1/channels/(-[1-9][0-9]{0,18})/summary\Z")
+CHANNEL_REVIEWS_PATH = re.compile(r"/v1/channels/(-[1-9][0-9]{0,18})/reviews\Z")
 ALLOWED_RULE_FIELDS = frozenset({"mode", "deduplicate", "include", "exclude"})
 NATIVE_ACTIONS = frozenset({
     "subscribe", "unsubscribe", "activate", "deactivate",
     "set_title", "set_hashtags", "set_interval", "set_length_limit", "set_option",
     "set_default_interval", "set_default_length_limit", "set_default_option",
     "activate_all", "deactivate_all", "reset_subscription",
+    "review_approve", "review_reject",
 })
+REVIEW_ACTIONS = frozenset({"review_approve", "review_reject"})
 DEFAULT_ACTIONS = frozenset({
     "set_default_interval", "set_default_length_limit", "set_default_option",
 })
@@ -328,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/capabilities":
                 return self._json(200, {"read": ["health", "status", "feeds", "subscriptions",
                                                  "subscriptions.settings", "channels.defaults",
-                                                 "channels.summary", "rules", "reviews"],
+                                                 "channels.summary", "channels.reviews", "rules", "reviews"],
                                         "write": ((["rules.update"] if self.server.allow_rules_write else [])
                                                    + (["subscriptions.subscribe", "subscriptions.unsubscribe",
                                                        "subscriptions.activate", "subscriptions.deactivate",
@@ -337,7 +340,8 @@ class Handler(BaseHTTPRequestHandler):
                                                         "subscriptions.set_option", "channels.set_default_interval",
                                                         "channels.set_default_length_limit", "channels.set_default_option",
                                                         "subscriptions.activate_all", "subscriptions.deactivate_all",
-                                                        "subscriptions.reset"]
+                                                        "subscriptions.reset",
+                                                        "reviews.approve", "reviews.reject"]
                                                       if self.server.allow_subscription_write else [])),
                                         "unsupported": ["shell", "sql", "arbitrary_file", "deploy", "publish"]})
             if path == "/v1/status":
@@ -403,6 +407,24 @@ class Handler(BaseHTTPRequestHandler):
                 if not rows:
                     raise ApiError(404, "subscription not found")
                 return self._json(200, {"settings": rows[0]})
+            match = CHANNEL_REVIEWS_PATH.fullmatch(path)
+            if match:
+                channel = int(match.group(1))
+                if channel not in self.server.allowed_channels:
+                    raise ApiError(403, "channel not approved")
+                limit = self._limit()
+                if self.server.review_db.is_symlink():
+                    raise ApiError(503, "RSSPlus review database unavailable")
+                if not self.server.review_db.exists():
+                    cfg, _ = _read_optional_config(self.server.config_file)
+                    if cfg and cfg.get("enabled") is True:
+                        raise ApiError(503, "RSSPlus review database unavailable")
+                    return self._json(200, {"channel_id": channel, "items": [], "available": False})
+                return self._json(200, {"channel_id": channel, "items": _sqlite_read(
+                    self.server.review_db,
+                    "SELECT id,chat_id,sub_id,status,created_at FROM items "
+                    "WHERE chat_id=? ORDER BY created_at DESC LIMIT ?",
+                    (channel, limit)), "available": True})
             if path == "/v1/reviews":
                 limit = self._limit()
                 if self.server.review_db.is_symlink():
@@ -459,6 +481,13 @@ class Handler(BaseHTTPRequestHandler):
             elif action in BULK_ACTIONS:
                 if not _valid_bulk_action(body):
                     raise ApiError(400, "invalid bulk confirmation")
+            elif action in REVIEW_ACTIONS:
+                if (set(body) != {"action", "channel_id", "review_id", "confirm"}
+                        or not isinstance(body.get("review_id"), str)
+                        or not re.fullmatch(r"[0-9a-f]{16}", body["review_id"])
+                        or body.get("confirm") != ("PUBLISH_REVIEW" if action == "review_approve"
+                                                  else "REJECT_REVIEW")):
+                    raise ApiError(400, "invalid review confirmation")
             else:
                 if (type(body.get("subscription_id")) is not int
                         or not 0 < body["subscription_id"] < 2**63):
@@ -522,6 +551,13 @@ class Handler(BaseHTTPRequestHandler):
                                 or not isinstance(outcome.get("reset_fields"), list)):
                             raise ApiError(502, "native reset response mismatch")
                         output["reset_fields"] = outcome["reset_fields"]
+                    if action in REVIEW_ACTIONS:
+                        status_expected = "published" if action == "review_approve" else "rejected"
+                        if (outcome.get("review_id") != body["review_id"]
+                                or outcome.get("status") != status_expected
+                                or outcome.get("channel_id") != channel):
+                            raise ApiError(502, "native review response mismatch")
+                        output["review_id"], output["status"] = body["review_id"], status_expected
                     self.server.audit(event, "applied", str(channel))
                     return self._json(200, output)
                 self.server.audit(event, "rejected", str(channel))
