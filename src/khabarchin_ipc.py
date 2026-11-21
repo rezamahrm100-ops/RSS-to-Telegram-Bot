@@ -15,9 +15,10 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from . import env
+from . import db, env
 from .command.inner import sub as native_sub
 from .command.inner import utils as native_utils
+from .command.inner import customization as native_customization
 
 _SOCKET_NAME = ".khabarchin-ipc.sock"
 _MAX_BYTES = 2048
@@ -25,6 +26,41 @@ _runner = None
 _site = None
 _socket_path = None
 _channels = frozenset()
+_SETTING_ACTIONS = frozenset({
+    "set_interval", "set_length_limit", "set_title", "set_hashtags", "set_option",
+})
+
+
+def _safe_string(value, limit: int):
+    return (value is None or
+            (isinstance(value, str) and 1 <= len(value) <= limit
+             and all(ord(ch) >= 32 and ord(ch) != 127 for ch in value)))
+
+
+def _valid_setting(value):
+    action = value.get("action")
+    if not _positive_int(value.get("subscription_id")):
+        return False
+    if action == "set_option":
+        field = value.get("field")
+        choices = native_customization.SUB_OPTIONS_EXHAUSTIVE_VALUES
+        return (set(value) == {"action", "channel_id", "subscription_id", "field", "value"}
+                and isinstance(field, str) and field in choices
+                and type(value.get("value")) is int
+                and value["value"] in (-100, *choices[field]))
+    if set(value) != {"action", "channel_id", "subscription_id", "value"}:
+        return False
+    item = value.get("value")
+    if action == "set_interval":
+        return item is None or (type(item) is int and 1 <= item <= 1440)
+    if action == "set_length_limit":
+        return type(item) is int and (item == -100 or 0 <= item <= 4096)
+    if action == "set_title":
+        return _safe_string(item, 1024)
+    if action == "set_hashtags":
+        return _safe_string(item, 255)
+    return False
+
 
 
 def _positive_int(value):
@@ -78,6 +114,9 @@ async def _dispatch(request):
     elif action in ("unsubscribe", "activate", "deactivate"):
         if set(value) != {"action", "channel_id", "subscription_id"} or not _positive_int(value.get("subscription_id")):
             raise web.HTTPBadRequest(text='{"error":"invalid subscription request"}', content_type="application/json")
+    elif action in _SETTING_ACTIONS:
+        if not _valid_setting(value):
+            raise web.HTTPBadRequest(text='{"error":"invalid settings request"}', content_type="application/json")
     else:
         raise web.HTTPBadRequest(text='{"error":"unsupported operation"}', content_type="application/json")
 
@@ -92,6 +131,35 @@ async def _dispatch(request):
                 return web.json_response({"error": "subscription unchanged or rejected"}, status=409)
             return web.json_response({"success": True, "action": action,
                                       "channel_id": channel_id, "subscription_id": item.id})
+        if action in _SETTING_ACTIONS:
+            # Look up through the live bot ORM; never let API mutate another channel's subscription.
+            sub = await db.Sub.get_or_none(id=value["subscription_id"], user_id=channel_id)
+            if sub is None:
+                return web.json_response({"error": "subscription not found"}, status=404)
+            if action == "set_interval":
+                await native_customization.set_interval(
+                    sub, -100 if value["value"] is None else value["value"])
+                field = "interval"
+            elif action == "set_length_limit":
+                await native_customization.set_length_limit(sub, value["value"])
+                field = "length_limit"
+            elif action == "set_title":
+                await native_customization.set_sub_title(sub, value["value"])
+                field = "title"
+            elif action == "set_hashtags":
+                await native_customization.set_sub_hashtags(sub, value["value"])
+                field = "tags"
+            else:
+                field = value["field"]
+                # Upstream's button cycles the same enum values; API selects
+                # one value deterministically using the same native ORM model.
+                if getattr(sub, field) != value["value"]:
+                    setattr(sub, field, value["value"])
+                    await sub.save(update_fields=(field,))
+            return web.json_response({"success": True, "action": action,
+                                      "channel_id": channel_id,
+                                      "subscription_id": sub.id,
+                                      "field": field, "value": getattr(sub, field)})
         if action == "unsubscribe":
             outcome = await native_sub.unsub(channel_id, sub_id=value["subscription_id"], lang="en")
             if outcome.get("sub") is None:
