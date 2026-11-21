@@ -91,6 +91,15 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(mod.BackupError):
             mod._check_local_dotenv(envfile, self.config)
 
+    def test_low_disk_space_rejects_snapshot(self):
+        from unittest.mock import patch
+        from collections import namedtuple
+        Usage = namedtuple('Usage', ('total', 'used', 'free'))
+        with patch.object(mod.shutil, 'disk_usage', return_value=Usage(1024, 1023, 1)):
+            with self.assertRaises(mod.BackupError):
+                mod.create_backup(self.config, [], self.root / "backups")
+        self.assertFalse(any((self.root / "backups").iterdir()))
+
     def test_mountinfo_selects_longest_matching_mount(self):
         table = ("1 0 0:1 / / rw - ext4 /dev/vda1 rw\n"
                  "2 1 0:2 / /var/backups rw - nfs4 server:/archive rw\n")
