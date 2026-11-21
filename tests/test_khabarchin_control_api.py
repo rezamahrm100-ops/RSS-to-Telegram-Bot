@@ -25,6 +25,8 @@ class ApiTests(unittest.TestCase):
         self.config = Path(self.folder.name)
         self.db = self.config / 'db.sqlite3'
         con = sqlite3.connect(self.db)
+        con.execute('CREATE TABLE user(id INTEGER PRIMARY KEY, state INTEGER, lang TEXT, sub_limit INTEGER, interval INTEGER, notify INTEGER, send_mode INTEGER, length_limit INTEGER, link_preview INTEGER, display_author INTEGER, display_via INTEGER, display_title INTEGER, display_entry_tags INTEGER, style INTEGER, display_media INTEGER)')
+        con.execute('INSERT INTO user(id,state,lang,sub_limit,interval,notify,send_mode,length_limit,link_preview,display_author,display_via,display_title,display_entry_tags,style,display_media) VALUES(-10001,50,"en",10,NULL,1,0,0,0,0,0,0,-1,0,0)')
         con.execute('CREATE TABLE feed(id INTEGER PRIMARY KEY, title TEXT, link TEXT, state INTEGER, error_count INTEGER)')
         con.execute('CREATE TABLE sub(id INTEGER PRIMARY KEY, user_id INTEGER, feed_id INTEGER, state INTEGER, title TEXT, tags TEXT, interval INTEGER, notify INTEGER, send_mode INTEGER, length_limit INTEGER, link_preview INTEGER, display_author INTEGER, display_via INTEGER, display_title INTEGER, display_entry_tags INTEGER, style INTEGER, display_media INTEGER)')
         con.execute('INSERT INTO feed VALUES(1, "Scientific feed", "https://example.org/feed", 1, 0)')
@@ -353,6 +355,68 @@ class ApiTests(unittest.TestCase):
         code, data, _ = self.request('POST', '/v1/commands', {**base, 'value': 30})
         self.assertEqual(code, 502)
         self.assertEqual(data['error'], 'native settings response mismatch')
+
+
+    def test_channel_default_settings_are_permission_scoped(self):
+        self.assertEqual(self.request('GET', '/v1/channels/-10001/defaults')[0], 403)
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('GET', '/v1/channels/-10001/defaults')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['defaults']['channel_id'], -10001)
+        self.assertEqual(data['defaults']['notify'], 1)
+        self.assertNotIn('admin', data['defaults'])
+        self.assertEqual(self.request('GET', '/v1/channels/-99999/defaults')[0], 403)
+
+    def test_channel_count_supports_confirmed_bulk(self):
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('GET', '/v1/channels/-10001/summary')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['total_count'], 1)
+        self.assertEqual(data['active_count'], 1)
+        self.assertEqual(self.request('GET', '/v1/channels/-99999/summary')[0], 403)
+
+    def test_defaults_bulk_reset_schema_and_default_deny(self):
+        self.server.allowed_channels = frozenset({-10001})
+        base = {'channel_id': -10001}
+        for request in (
+            {'action': 'set_default_interval', 'value': 12},
+            {'action': 'set_default_length_limit', 'value': 0},
+            {'action': 'set_default_option', 'field': 'display_media', 'value': 1},
+            {'action': 'activate_all', 'expected_count': 1, 'confirm': 'ACTIVATE_ALL'},
+            {'action': 'deactivate_all', 'expected_count': 1, 'confirm': 'DEACTIVATE_ALL'},
+            {'action': 'reset_subscription', 'subscription_id': 1},
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(self.request('POST', '/v1/commands', {**base, **request})[0], 403)
+        self.server.allow_subscription_write = True
+        for request in (
+            {'action': 'set_default_interval', 'value': True},
+            {'action': 'set_default_length_limit', 'value': -100},
+            {'action': 'set_default_option', 'field': 'display_media', 'value': -100},
+            {'action': 'set_default_option', 'field': 'admin', 'value': 1},
+            {'action': 'set_default_option', 'field': 'notify', 'value': False},
+            {'action': 'activate_all', 'expected_count': 1, 'confirm': 'deactivate_all'},
+            {'action': 'deactivate_all', 'expected_count': True, 'confirm': 'DEACTIVATE_ALL'},
+            {'action': 'deactivate_all', 'expected_count': 10001, 'confirm': 'DEACTIVATE_ALL'},
+            {'action': 'reset_subscription', 'subscription_id': True},
+            {'action': 'reset_subscription', 'subscription_id': 1, 'extra': 'hack'},
+        ):
+            with self.subTest(request=request):
+                self.assertEqual(self.request('POST', '/v1/commands', {**base, **request})[0], 400)
+        self.assertEqual(self.request('GET', '/v1/status')[1]['active_subscriptions'], 1)
+
+    def test_defaults_bulk_reset_fail_closed_if_bot_ipc_missing(self):
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        for payload in (
+            {'action': 'set_default_interval', 'channel_id': -10001, 'value': None},
+            {'action': 'activate_all', 'channel_id': -10001,
+             'expected_count': 1, 'confirm': 'ACTIVATE_ALL'},
+            {'action': 'reset_subscription', 'channel_id': -10001, 'subscription_id': 1},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.request('POST', '/v1/commands', payload)[0], 503)
+        self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
 
 if __name__ == '__main__':
     unittest.main()
