@@ -2,12 +2,12 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Khabarchin RSStT Control API",
-    "version": "0.1.0",
-    "description": "Loopback-only owner API. Real production backup, Telegram publishing and deployment are NOT implemented by this API."
+    "version": "0.2.0",
+    "description": "Loopback-only owner API. Subscription commands are disabled by default and require live RSStT IPC, explicit channel allowlist and separate deployment review; no arbitrary SQL, shell, Telegram publishing or deploy."
   },
   "servers": [
     {
-      "url": "http://127.0.0.1:8765",
+      "url": "http://127.0.0.1:8766",
       "description": "Same VPS loopback only; no public gateway"
     }
   ],
@@ -70,6 +70,61 @@
             }
           }
         }
+      },
+      "NativeSubscriptionCommand": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "url"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "subscribe"
+                ]
+              },
+              "channel_id": {
+                "type": "integer"
+              },
+              "url": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 1024
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "subscription_id"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "unsubscribe",
+                  "activate",
+                  "deactivate"
+                ]
+              },
+              "channel_id": {
+                "type": "integer"
+              },
+              "subscription_id": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        ]
       }
     }
   },
@@ -262,6 +317,43 @@
           },
           "428": {
             "description": "If-Match missing"
+          }
+        }
+      }
+    },
+    "/v1/commands": {
+      "post": {
+        "operationId": "runNativeSubscriptionCommand",
+        "summary": "Owner-only native bot subscribe/unsubscribe/activate/deactivate, explicitly disabled by default",
+        "description": "For explicitly allowed negative Telegram channel IDs only; native RSStT process receives operation over a 0600 Unix socket. No direct SQLite modifications by this gateway.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeSubscriptionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Native RSStT operation applied"
+          },
+          "400": {
+            "description": "Invalid or unsupported operation"
+          },
+          "403": {
+            "description": "Write gate disabled or channel not approved"
+          },
+          "404": {
+            "description": "Subscription not found"
+          },
+          "409": {
+            "description": "Subscription rejected or unchanged"
+          },
+          "503": {
+            "description": "Bot IPC unavailable"
           }
         }
       }
