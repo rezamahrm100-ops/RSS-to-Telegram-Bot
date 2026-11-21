@@ -24,13 +24,54 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 MAX_REQUEST_BYTES = 8192
 MAX_CONFIG_BYTES = 262144
 WRITE_LOCK = threading.Lock()
 RULE_PATH = re.compile(r"/v1/rules/(-?\d{1,20})\Z")
 ALLOWED_RULE_FIELDS = frozenset({"mode", "deduplicate", "include", "exclude"})
-NATIVE_ACTIONS = frozenset({"subscribe", "unsubscribe", "activate", "deactivate"})
+NATIVE_ACTIONS = frozenset({
+    "subscribe", "unsubscribe", "activate", "deactivate",
+    "set_title", "set_hashtags", "set_interval", "set_length_limit", "set_option",
+})
+SETTING_ACTIONS = frozenset({
+    "set_title", "set_hashtags", "set_interval", "set_length_limit", "set_option",
+})
+SETTING_CHOICES = {
+    "notify": (1, 0),
+    "send_mode": (0, 1, 2, -1),
+    "link_preview": (0, 1, -1),
+    "display_media": (0, 1, -1),
+    "display_author": (0, 1, -1),
+    "display_via": (0, 1, -3, -1, -4, -2),
+    "display_title": (0, 1, -1),
+    "display_entry_tags": (1, -1),
+    "style": (0, 1),
+}
+
+
+def _valid_setting_action(body: dict) -> bool:
+    action = body["action"]
+    if action == "set_option":
+        field = body.get("field")
+        return (set(body) == {"action", "channel_id", "subscription_id", "field", "value"}
+                and isinstance(field, str) and field in SETTING_CHOICES
+                and type(body.get("value")) is int
+                and body["value"] in (-100, *SETTING_CHOICES[field]))
+    if set(body) != {"action", "channel_id", "subscription_id", "value"}:
+        return False
+    item = body.get("value")
+    if action == "set_interval":
+        return item is None or (type(item) is int and 1 <= item <= 1440)
+    if action == "set_length_limit":
+        return type(item) is int and (item == -100 or 0 <= item <= 4096)
+    if action in ("set_title", "set_hashtags"):
+        limit = 1024 if action == "set_title" else 255
+        return (item is None or (isinstance(item, str)
+                and 1 <= len(item) <= limit
+                and all(ord(ch) >= 32 and ord(ch) != 127 for ch in item)))
+    return False
+
 
 
 class ApiError(Exception):
@@ -253,7 +294,10 @@ class Handler(BaseHTTPRequestHandler):
                                                  "rules", "reviews"],
                                         "write": ((["rules.update"] if self.server.allow_rules_write else [])
                                                    + (["subscriptions.subscribe", "subscriptions.unsubscribe",
-                                                       "subscriptions.activate", "subscriptions.deactivate"]
+                                                       "subscriptions.activate", "subscriptions.deactivate",
+                                                        "subscriptions.set_title", "subscriptions.set_hashtags",
+                                                        "subscriptions.set_interval", "subscriptions.set_length_limit",
+                                                        "subscriptions.set_option"]
                                                       if self.server.allow_subscription_write else [])),
                                         "unsupported": ["shell", "sql", "arbitrary_file", "deploy", "publish"]})
             if path == "/v1/status":
@@ -327,9 +371,13 @@ class Handler(BaseHTTPRequestHandler):
                         or not 8 <= len(body["url"]) <= 1024):
                     raise ApiError(400, "invalid subscription command")
             else:
-                if (set(body) != {"action", "channel_id", "subscription_id"}
-                        or type(body.get("subscription_id")) is not int
+                if (type(body.get("subscription_id")) is not int
                         or not 0 < body["subscription_id"] < 2**63):
+                    raise ApiError(400, "invalid subscription command")
+                if action in SETTING_ACTIONS:
+                    if not _valid_setting_action(body):
+                        raise ApiError(400, "invalid settings command")
+                elif set(body) != {"action", "channel_id", "subscription_id"}:
                     raise ApiError(400, "invalid subscription command")
             sock = self.server.ipc_socket
             if sock.is_symlink() or not sock.is_socket():
@@ -356,9 +404,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(502, "native response invalid")
                 self.server.audit(event, "applied" if response.status == 200 else "rejected",
                                   str(channel))
-                return self._json(response.status, {"success": True, "action": action,
-                    "channel_id": channel, "subscription_id": outcome.get("subscription_id")}
-                    if response.status == 200 else {"error": "native operation rejected"})
+                if response.status == 200:
+                    output = {"success": True, "action": action, "channel_id": channel,
+                              "subscription_id": outcome.get("subscription_id")}
+                    if action in SETTING_ACTIONS:
+                        expected_field = body["field"] if action == "set_option" else {
+                            "set_title": "title", "set_hashtags": "tags",
+                            "set_interval": "interval", "set_length_limit": "length_limit"
+                        }[action]
+                        if (outcome.get("field") != expected_field or
+                                outcome.get("subscription_id") != body["subscription_id"]):
+                            raise ApiError(502, "native settings response mismatch")
+                        output["field"] = expected_field
+                        output["value"] = outcome.get("value")
+                    return self._json(200, output)
+                return self._json(response.status, {"error": "native operation rejected"})
             except (OSError, http.client.HTTPException, TimeoutError):
                 raise ApiError(503, "native bot control unavailable") from None
             finally:
