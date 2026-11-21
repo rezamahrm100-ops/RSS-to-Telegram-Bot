@@ -195,6 +195,7 @@ class ApiTests(unittest.TestCase):
         import ast
         source = (BASE / "src/khabarchin_ipc.py").read_text()
         ast.parse(source)
+        ast.parse((BASE / "src/entrypoint.py").read_text())
 
     def test_subscription_write_is_off_by_default(self):
         code, payload, _ = self.request('POST', '/v1/commands', {
@@ -210,6 +211,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(code, 403)
         code, _, _ = self.request('POST', '/v1/commands', {
             'action': 'shell', 'channel_id': -10001, 'command': 'id'})
+        self.assertEqual(code, 400)
+        code, _, _ = self.request('POST', '/v1/commands', {
+            'action': [], 'channel_id': -10001, 'subscription_id': 1})
         self.assertEqual(code, 400)
         code, _, _ = self.request('POST', '/v1/commands', {
             'action': 'unsubscribe', 'channel_id': -10001, 'subscription_id': True})
