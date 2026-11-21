@@ -1,6 +1,14 @@
 name: Khabarchin Control API offline security tests
 
 on:
+  push:
+    branches: ['feature/khabarchin-control-api-v1-20261121']
+    paths:
+      - 'ops/khabarchin_control_api.py'
+      - 'ops/khabarchin_status_probe.py'
+      - 'tests/test_khabarchin_control_api.py'
+      - 'ops/openapi-khabarchin-control-v1.json'
+      - '.github/workflows/khabarchin-api-offline.yml'
   pull_request:
     paths:
       - 'ops/khabarchin_control_api.py'
