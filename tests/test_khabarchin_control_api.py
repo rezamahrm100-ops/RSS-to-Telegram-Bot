@@ -161,6 +161,32 @@ class ApiTests(unittest.TestCase):
                     probe.main()
         self.assertIn('KHABARCHIN_API_STATUS=PASS_READ_ONLY', out.getvalue())
 
+    def test_missing_optional_rssplus_config_keeps_rsstt_status_readable(self):
+        self.config_file.unlink()
+        (self.config / 'rssplus.sqlite3').unlink()
+        code, data, _ = self.request('GET', '/v1/status')
+        self.assertEqual(code, 200)
+        self.assertEqual((data['feeds'], data['subscriptions']), (1, 1))
+        self.assertEqual(data['rssplus_configured'], False)
+        self.assertEqual(data['rssplus_enabled'], False)
+        code, rules, etag = self.request('GET', '/v1/rules')
+        self.assertEqual(code, 200)
+        self.assertEqual(rules, {'enabled': False, 'configured': False,
+                                 'default': {}, 'targets': {}})
+        self.assertIsNone(etag)
+        code, reviews, _ = self.request('GET', '/v1/reviews')
+        self.assertEqual((code, reviews), (200, {'items': [], 'available': False}))
+        self.server.allow_rules_write = True
+        self.assertEqual(self.request('PUT', '/v1/rules/-10001', {'mode': 'auto'},
+                                      {'If-Match': '"' + '0'*64 + '"'})[0], 503)
+        self.assertFalse(self.config_file.exists())
+
+    def test_dangling_rssplus_config_symlink_is_not_treated_as_absence(self):
+        self.config_file.unlink()
+        self.config_file.symlink_to(self.config / 'does-not-exist.json')
+        self.assertEqual(self.request('GET', '/v1/status')[0], 503)
+        self.assertEqual(self.request('GET', '/v1/rules')[0], 503)
+
     def test_missing_db_no_false_positive(self):
         self.db.unlink()
         self.assertEqual(self.request('GET', '/v1/status')[0], 503)
