@@ -317,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self._strict_json()
             action = body.get("action")
             channel = body.get("channel_id")
-            if action not in NATIVE_ACTIONS:
+            if not isinstance(action, str) or action not in NATIVE_ACTIONS:
                 raise ApiError(400, "unsupported operation")
             if type(channel) is not int or channel not in self.server.allowed_channels:
                 raise ApiError(403, "channel not approved")
@@ -364,8 +364,10 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
         except ApiError as exc:
+            self.close_connection = True
             self._json(exc.code, {"error": exc.message})
         except Exception:
+            self.close_connection = True
             self._json(500, {"error": "internal error"})
 
     def do_PUT(self):
