@@ -304,50 +304,80 @@ async def process_post(*, sub, post, entry, feed, send_func) -> bool:
     return True
 
 
-async def handle_callback(event) -> None:
-    from . import env, db
+async def _publish_review_item(item: dict):
+    """Use precisely the normal RSStT entry parser and native media sender."""
+    from . import db
     from .parsing.post import get_post_from_entry
+    payload = json.loads(item["payload"])
+    sub = await db.Sub.get_or_none(id=item["sub_id"], user_id=item["chat_id"])
+    if sub is None:
+        raise ValueError("Subscription no longer exists or destination has changed")
+    post = await get_post_from_entry(
+        payload["entry"], payload["feed_title"], payload["feed_link"]
+    )
+    await post.send_formatted_post_according_to_sub(sub)
+    return post
+
+
+async def act_on_review(key: str, chat_id: int, action: str) -> str:
+    """One state transition for Telegram buttons AND owner API.
+
+    Conditional transitions in SQLite prevent repeated or concurrent approval.
+    A failed media send returns the item to pending; successful sends are never
+    reversed because an optional webhook failed.
+    """
+    if action not in ("approve", "reject") or not re.fullmatch(r"[0-9a-f]{16}", key):
+        raise ValueError("Invalid review operation")
+    config = load_config()
+    if not config or not config.get("review_chat_id"):
+        raise ValueError("RSSPlus review is unavailable")
+    item = _get_item(key)
+    if (not item or item["status"] != "pending"
+            or type(chat_id) is not int or int(item["chat_id"]) != chat_id):
+        raise ValueError("Review not pending for this destination")
+    if action == "reject":
+        if not _transition(key, "pending", "rejected"):
+            raise ValueError("Review was already processed")
+        return "rejected"
+    if not _transition(key, "pending", "publishing"):
+        raise ValueError("Review was already processed")
+    try:
+        post = await _publish_review_item(item)
+    except Exception:
+        _transition(key, "publishing", "pending")
+        raise
+    if not _transition(key, "publishing", "published"):
+        raise RuntimeError("Review delivered but state transition could not be verified")
+    try:
+        await _webhook(config, post, chat_id, "published")
+    except Exception:
+        logger.exception("Optional RSSPlus webhook failed after confirmed publish")
+    return "published"
+
+
+async def handle_callback(event) -> None:
+    from . import env
     if int(event.sender_id or 0) not in {int(x) for x in env.MANAGER}:
         await event.answer("اجازهٔ مدیریت ندارید", alert=True)
         return
     match = re.fullmatch(rb"rssplus:(approve|reject):([0-9a-f]{16})", event.data or b"")
     if not match:
         return
-    action = match.group(1).decode()
-    key = match.group(2).decode()
+    action, key = match.group(1).decode(), match.group(2).decode()
     item = _get_item(key)
     if not item or item["status"] != "pending":
         await event.answer("قبلاً بررسی شده یا در حال ارسال است", alert=True)
         return
-    if action == "reject":
-        if not _transition(key, "pending", "rejected"):
-            await event.answer("قبلاً بررسی شده", alert=True)
-            return
-        await event.edit("❌ خبر رد شد.", buttons=None)
-        await event.answer()
-        return
-    if not _transition(key, "pending", "publishing"):
-        await event.answer("قبلاً بررسی شده", alert=True)
-        return
     try:
-        payload = json.loads(item["payload"])
-        sub = await db.Sub.get_or_none(id=item["sub_id"])
-        if sub is None or int(sub.user_id) != item["chat_id"]:
-            raise ValueError("Subscription no longer exists or destination has changed")
-        post = await get_post_from_entry(
-            payload["entry"], payload["feed_title"], payload["feed_link"]
-        )
-        await post.send_formatted_post_according_to_sub(sub)
-        _transition(key, "publishing", "published")
-        await event.edit("✅ خبر منتشر شد.", buttons=None)
-        config = load_config()
-        if config:
-            await _webhook(config, post, item["chat_id"], "published")
+        status = await act_on_review(key, int(item["chat_id"]), action)
+        await event.edit("✅ خبر منتشر شد." if status == "published" else "❌ خبر رد شد.",
+                         buttons=None)
         await event.answer()
-    except Exception as exc:
-        _transition(key, "publishing", "pending")
-        logger.exception("RSSPlus approval failed: %s", key)
-        await event.answer(f"خطا در انتشار: {str(exc)[:120]}", alert=True)
+    except ValueError:
+        await event.answer("قبلاً بررسی شده یا مقصد مجاز نیست", alert=True)
+    except Exception:
+        logger.exception("RSSPlus moderation failed: %s", key)
+        await event.answer("خطا در بررسی یا انتشار؛ لاگ سرور را بررسی کنید.", alert=True)
 
 
 async def handle_pending_command(event) -> None:
