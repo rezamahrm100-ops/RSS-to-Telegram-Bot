@@ -50,7 +50,7 @@ To enable rule updates **after authorization and testing**, add `--allow-rules-w
 python3 -m unittest discover -s tests -p 'test_khabarchin_control_api.py' -v
 ```
 
-Twelve synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. Local fixture PASS is **not** VPS deployment proof.
+Thirteen synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. The 13 local fixtures pass; local fixture PASS is **not** VPS deployment proof.
 
 ## Release gates
 
