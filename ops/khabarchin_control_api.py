@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
+import socket
 import hmac
 import json
 import os
@@ -22,12 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_REQUEST_BYTES = 8192
 MAX_CONFIG_BYTES = 262144
 WRITE_LOCK = threading.Lock()
 RULE_PATH = re.compile(r"/v1/rules/(-?\d{1,20})\Z")
 ALLOWED_RULE_FIELDS = frozenset({"mode", "deduplicate", "include", "exclude"})
+NATIVE_ACTIONS = frozenset({"subscribe", "unsubscribe", "activate", "deactivate"})
 
 
 class ApiError(Exception):
@@ -135,15 +138,32 @@ def _atomic_json_write(path: Path, config: dict) -> None:
             temp.unlink(missing_ok=True)
 
 
+class UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP over the existing private Unix socket; never proxies over the network."""
+
+    def __init__(self, path: Path):
+        super().__init__("localhost", timeout=8)
+        self.socket_path = str(path)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
 class Controller(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, config_dir: Path, db: Path, token: bytes,
-                 allow_rules_write: bool = False):
+                 allow_rules_write: bool = False, allow_subscription_write: bool = False,
+                 allowed_channels=()):
         self.config_dir = config_dir
         self.db = db
         self.token = token
         self.allow_rules_write = allow_rules_write
+        self.allow_subscription_write = allow_subscription_write
+        self.allowed_channels = frozenset(allowed_channels)
+        self.ipc_socket = config_dir / ".khabarchin-ipc.sock"
         self.config_file = config_dir / "rssplus.json"
         self.review_db = config_dir / "rssplus.sqlite3"
         self.audit_log = config_dir / ".khabarchin-api-audit.jsonl"
@@ -194,6 +214,21 @@ class Handler(BaseHTTPRequestHandler):
                 value[7:].encode(), self.server.token):
             raise ApiError(401, "unauthorized")
 
+    def _strict_json(self) -> dict:
+        length_value = self.headers.get("Content-Length", "")
+        if (not length_value.isdecimal()
+                or not 1 <= int(length_value) <= 2048
+                or self.headers.get("Content-Type", "").split(";")[0] != "application/json"
+                or self.headers.get("Transfer-Encoding")):
+            raise ApiError(400, "invalid JSON request framing")
+        try:
+            value = json.loads(self.rfile.read(int(length_value)))
+        except (ValueError, UnicodeError):
+            raise ApiError(400, "invalid JSON") from None
+        if not isinstance(value, dict):
+            raise ApiError(400, "JSON object required")
+        return value
+
     def _limit(self) -> int:
         query = parse_qs(urlsplit(self.path).query, keep_blank_values=False)
         if set(query) - {"limit"}:
@@ -216,7 +251,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/capabilities":
                 return self._json(200, {"read": ["health", "status", "feeds", "subscriptions",
                                                  "rules", "reviews"],
-                                        "write": ["rules.update"] if self.server.allow_rules_write else [],
+                                        "write": ((["rules.update"] if self.server.allow_rules_write else [])
+                                                   + (["subscriptions.subscribe", "subscriptions.unsubscribe",
+                                                       "subscriptions.activate", "subscriptions.deactivate"]
+                                                      if self.server.allow_subscription_write else [])),
                                         "unsupported": ["shell", "sql", "arbitrary_file", "deploy", "publish"]})
             if path == "/v1/status":
                 counts = _sqlite_read(self.server.db,
@@ -264,6 +302,67 @@ class Handler(BaseHTTPRequestHandler):
                     "configured": True, "default": _public_policy(cfg.get("default")),
                     "targets": public_targets}, etag)
             raise ApiError(404, "unknown endpoint")
+        except ApiError as exc:
+            self._json(exc.code, {"error": exc.message})
+        except Exception:
+            self._json(500, {"error": "internal error"})
+
+    def do_POST(self):
+        try:
+            self._preflight()
+            if self.path != "/v1/commands":
+                raise ApiError(404, "unknown endpoint")
+            if not self.server.allow_subscription_write:
+                raise ApiError(403, "subscription commands disabled")
+            body = self._strict_json()
+            action = body.get("action")
+            channel = body.get("channel_id")
+            if action not in NATIVE_ACTIONS:
+                raise ApiError(400, "unsupported operation")
+            if type(channel) is not int or channel not in self.server.allowed_channels:
+                raise ApiError(403, "channel not approved")
+            if action == "subscribe":
+                if (set(body) != {"action", "channel_id", "url"}
+                        or not isinstance(body.get("url"), str)
+                        or not 8 <= len(body["url"]) <= 1024):
+                    raise ApiError(400, "invalid subscription command")
+            else:
+                if (set(body) != {"action", "channel_id", "subscription_id"}
+                        or type(body.get("subscription_id")) is not int
+                        or not 0 < body["subscription_id"] < 2**63):
+                    raise ApiError(400, "invalid subscription command")
+            sock = self.server.ipc_socket
+            if sock.is_symlink() or not sock.is_socket():
+                raise ApiError(503, "native bot control unavailable")
+            event = "subscriptions." + action
+            # A sanitised intent is recorded before any mutation; no URL or bearer in logs.
+            self.server.audit(event + ".intent", "accepted", str(channel))
+            conn = UnixHTTPConnection(sock)
+            try:
+                conn.request("POST", "/native/v1/command",
+                             body=json.dumps(body, separators=(",", ":")).encode(),
+                             headers={"Content-Type": "application/json"})
+                response = conn.getresponse()
+                raw = response.read(2049)
+                if len(raw) > 2048:
+                    raise ApiError(502, "native response too large")
+                try:
+                    outcome = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    raise ApiError(502, "native response invalid") from None
+                if not isinstance(outcome, dict) or response.status not in (200, 400, 403, 404, 409, 503):
+                    raise ApiError(502, "native response invalid")
+                if response.status == 200 and outcome.get("success") is not True:
+                    raise ApiError(502, "native response invalid")
+                self.server.audit(event, "applied" if response.status == 200 else "rejected",
+                                  str(channel))
+                return self._json(response.status, {"success": True, "action": action,
+                    "channel_id": channel, "subscription_id": outcome.get("subscription_id")}
+                    if response.status == 200 else {"error": "native operation rejected"})
+            except (OSError, http.client.HTTPException, TimeoutError):
+                raise ApiError(503, "native bot control unavailable") from None
+            finally:
+                conn.close()
         except ApiError as exc:
             self._json(exc.code, {"error": exc.message})
         except Exception:
@@ -324,6 +423,9 @@ def main(argv=None):
                         help="VPS-local restricted secret file, never in Git")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--allow-rules-write", action="store_true", default=False)
+    parser.add_argument("--allow-subscription-write", action="store_true", default=False)
+    parser.add_argument("--allowed-channel", action="append", type=int, default=[],
+                        help="Explicit authorized negative Telegram channel ID; repeat per channel")
     args = parser.parse_args(argv)
     config = args.config_dir.resolve(strict=True)
     if not config.is_dir() or args.config_dir.is_symlink():
@@ -341,7 +443,12 @@ def main(argv=None):
         parser.error("token must be 32 to 256 bytes")
     if not 1024 <= args.port <= 65535:
         parser.error("invalid port")
-    server = Controller(("127.0.0.1", args.port), config, db, token, args.allow_rules_write)
+    if args.allow_subscription_write and (not args.allowed_channel
+            or any(channel >= 0 for channel in args.allowed_channel)):
+        parser.error("subscription writes require explicit negative --allowed-channel IDs")
+    server = Controller(("127.0.0.1", args.port), config, db, token,
+                        args.allow_rules_write, args.allow_subscription_write,
+                        args.allowed_channel)
     print("KHABARCHIN_API=LOOPBACK_ONLY", flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
