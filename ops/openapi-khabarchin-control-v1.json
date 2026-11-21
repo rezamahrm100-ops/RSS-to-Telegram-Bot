@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Khabarchin RSStT Control API",
-    "version": "0.4.0",
-    "description": "Owner-scoped loopback REST API. Reads status, feeds, subscriptions, settings, per-channel defaults and counts. Optional native actions via private Unix IPC: subscription lifecycle, formatting, destination defaults, confirm-scoped bulk state changes and reset. All writes OFF by default; not a generic executor. Does not yet implement OPML transfer, manual media publish or complete RSSPlus moderation."
+    "version": "0.5.0",
+    "description": "Owner-only localhost REST API with RSSPlus review-queue approve/reject actions routed into the same native state transition as Telegram callback buttons. All writes remain OFF by default. Approval publishes real Telegram media after explicit confirmation, so requires independently reviewed bot IPC deployment and target allowlist."
   },
   "servers": [
     {
@@ -468,6 +468,56 @@
                 "minimum": 1
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "review_id",
+              "confirm"
+            ],
+            "properties": {
+              "action": {
+                "const": "review_approve"
+              },
+              "channel_id": {
+                "type": "integer"
+              },
+              "review_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "confirm": {
+                "const": "PUBLISH_REVIEW"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "channel_id",
+              "review_id",
+              "confirm"
+            ],
+            "properties": {
+              "action": {
+                "const": "review_reject"
+              },
+              "channel_id": {
+                "type": "integer"
+              },
+              "review_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "confirm": {
+                "const": "REJECT_REVIEW"
+              }
+            }
           }
         ],
         "x-khabarchin-enum-values": {
@@ -727,7 +777,7 @@
       "post": {
         "operationId": "runNativeSubscriptionCommand",
         "summary": "Opt-in native RSStT subscription, posting-default, reset and count-confirmed bulk operations",
-        "description": "No arbitrary command, SQL, scripting or public network listener. All writes require two separate opt-in switches in the gateway and native process. Bulk state operations require explicit uppercase confirmation and matching current total count. A count race after validation cannot be excluded without further locking.",
+        "description": "No arbitrary command, SQL, scripting or public network listener. All writes require two separate opt-in switches in the gateway and native process. Bulk state operations require explicit uppercase confirmation and matching current total count. A count race after validation cannot be excluded without further locking. RSSPlus review_approve/review_reject require explicit confirmation, matching destination and a still-pending item; native atomic compare-and-set prevents duplicate publication.",
         "requestBody": {
           "required": true,
           "content": {
@@ -846,6 +896,34 @@
           },
           "403": {
             "description": "Channel not allowed"
+          }
+        }
+      }
+    },
+    "/v1/channels/{channel_id}/reviews": {
+      "get": {
+        "operationId": "readChannelModerationQueue",
+        "summary": "Read only allowed destination's review queue metadata",
+        "description": "Returns item ID, subscription ID, status and creation date; never returns archived article payload or message body.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scoped review item metadata or available false"
+          },
+          "403": {
+            "description": "Destination not allowlisted"
+          },
+          "503": {
+            "description": "Review database required but unavailable"
           }
         }
       }

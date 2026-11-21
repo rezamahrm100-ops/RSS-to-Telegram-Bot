@@ -81,3 +81,53 @@ class PublishTests(unittest.IsolatedAsyncioTestCase):
                 sender.assert_not_awaited()
                 preview.assert_awaited_once()
                 self.assertEqual(module._pending_items()[0]["status"], "pending")
+
+
+class ReviewActionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reject_only_pending_item_of_authorized_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {"enabled": True, "review_chat_id": 123}
+            with patch.object(module, "load_config", return_value=config), \
+                 patch.object(module, "_db_path", return_value=Path(tmp) / "reviews.sqlite3"):
+                key, _ = module._record(-1001, "a"*64, 10, json.dumps({
+                    "feed_title": "Test", "feed_link": "https://example.org/rss",
+                    "entry": {"title": "Review"}
+                }), "pending")
+                with self.assertRaises(ValueError):
+                    await module.act_on_review(key, -1002, "reject")
+                self.assertEqual(module._get_item(key)["status"], "pending")
+                self.assertEqual(await module.act_on_review(key, -1001, "reject"), "rejected")
+                self.assertEqual(module._get_item(key)["status"], "rejected")
+                with self.assertRaises(ValueError):
+                    await module.act_on_review(key, -1001, "reject")
+
+    async def test_approval_sends_once_and_commits_published_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {"enabled": True, "review_chat_id": 123}
+            with patch.object(module, "load_config", return_value=config), \
+                 patch.object(module, "_db_path", return_value=Path(tmp) / "reviews.sqlite3"), \
+                 patch.object(module, "_publish_review_item",
+                              new_callable=AsyncMock) as sender, \
+                 patch.object(module, "_webhook", new_callable=AsyncMock) as webhook:
+                key, _ = module._record(-1001, "b"*64, 10, "{}","pending")
+                self.assertEqual(await module.act_on_review(key, -1001, "approve"), "published")
+                self.assertEqual(module._get_item(key)["status"], "published")
+                sender.assert_awaited_once()
+                webhook.assert_awaited_once()
+                with self.assertRaises(ValueError):
+                    await module.act_on_review(key, -1001, "approve")
+                self.assertEqual(sender.await_count, 1)
+
+    async def test_failed_delivery_returns_item_to_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {"enabled": True, "review_chat_id": 123}
+            with patch.object(module, "load_config", return_value=config), \
+                 patch.object(module, "_db_path", return_value=Path(tmp) / "reviews.sqlite3"), \
+                 patch.object(module, "_publish_review_item",
+                              new_callable=AsyncMock) as sender:
+                sender.side_effect = RuntimeError("synthetic send failure")
+                key, _ = module._record(-1001, "c"*64, 10, "{}","pending")
+                with self.assertRaises(RuntimeError):
+                    await module.act_on_review(key, -1001, "approve")
+                self.assertEqual(module._get_item(key)["status"], "pending")
+

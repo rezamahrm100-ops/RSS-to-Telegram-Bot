@@ -9,13 +9,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from . import db, env
+from . import db, env, rssplus
 from .command.inner import sub as native_sub
 from .command.inner import utils as native_utils
 from .command.inner import customization as native_customization
@@ -33,6 +34,7 @@ _DEFAULT_ACTIONS = frozenset({
     "set_default_interval", "set_default_length_limit", "set_default_option",
 })
 _BULK_ACTIONS = frozenset({"activate_all", "deactivate_all"})
+_REVIEW_ACTIONS = frozenset({"review_approve", "review_reject"})
 _SUB_OPTION_FIELDS = (
     "length_limit", "notify", "send_mode", "link_preview", "display_author",
     "display_media", "display_title", "display_entry_tags", "display_via", "style",
@@ -170,11 +172,28 @@ async def _dispatch(request):
     elif action == "reset_subscription":
         if set(value) != {"action", "channel_id", "subscription_id"} or not _positive_int(value.get("subscription_id")):
             raise web.HTTPBadRequest(text='{"error":"invalid reset request"}', content_type="application/json")
+    elif action in _REVIEW_ACTIONS:
+        if (set(value) != {"action", "channel_id", "review_id", "confirm"}
+                or not isinstance(value.get("review_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{16}", value["review_id"])
+                or value.get("confirm") != ("PUBLISH_REVIEW" if action == "review_approve"
+                                             else "REJECT_REVIEW")):
+            raise web.HTTPBadRequest(text='{"error":"invalid review confirmation"}', content_type="application/json")
     else:
         raise web.HTTPBadRequest(text='{"error":"unsupported operation"}', content_type="application/json")
 
     channel_id = value["channel_id"]
     try:
+        if action in _REVIEW_ACTIONS:
+            try:
+                status = await rssplus.act_on_review(
+                    value["review_id"], channel_id,
+                    "approve" if action == "review_approve" else "reject")
+            except ValueError:
+                return web.json_response({"error": "review unavailable or already handled"}, status=409)
+            return web.json_response({"success": True, "action": action,
+                                      "channel_id": channel_id,
+                                      "review_id": value["review_id"], "status": status})
         if action == "subscribe":
             # Existing RSStT logic performs RSS parsing, ORM writes, limits and scheduler updates.
             outcome = await native_sub.subs(channel_id, (value["url"],), lang="en")

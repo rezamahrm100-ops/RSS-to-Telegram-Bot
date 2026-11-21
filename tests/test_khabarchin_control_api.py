@@ -418,5 +418,79 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(self.request('POST', '/v1/commands', payload)[0], 503)
         self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
 
+
+    def test_reviews_are_scoped_to_allowlisted_channel(self):
+        self.assertEqual(self.request('GET', '/v1/channels/-10001/reviews')[0], 403)
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('GET', '/v1/channels/-10001/reviews')
+        self.assertEqual(code, 200)
+        self.assertTrue(data['available'])
+        self.assertEqual(data['items'][0]['id'], 'abc')
+        self.assertNotIn('PRIVATE_BODY', json.dumps(data))
+        self.assertEqual(self.request('GET', '/v1/channels/-20002/reviews')[0], 403)
+
+    def test_moderation_disabled_and_confirmation_schema(self):
+        base = {'channel_id': -10001, 'review_id': 'f'*16}
+        good = {'action': 'review_approve', **base, 'confirm': 'PUBLISH_REVIEW'}
+        self.assertEqual(self.request('POST', '/v1/commands', good)[0], 403)
+        self.server.allowed_channels = frozenset({-10001})
+        self.server.allow_subscription_write = True
+        bad = [
+            {'action': 'review_approve', **base, 'confirm': 'REJECT_REVIEW'},
+            {'action': 'review_reject', **base, 'confirm': 'PUBLISH_REVIEW'},
+            {'action': 'review_reject', 'channel_id': -10001,
+             'review_id': '../etc/passwd', 'confirm': 'REJECT_REVIEW'},
+            {'action': 'review_approve', **base, 'confirm': 'PUBLISH_REVIEW', 'extra': 1},
+            {'action': 'review_approve', **base, 'confirm': True},
+        ]
+        for request in bad:
+            with self.subTest(request=request):
+                self.assertEqual(self.request('POST', '/v1/commands', request)[0], 400)
+        self.assertEqual(self.request('POST', '/v1/commands', good)[0], 503)
+        self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
+
+    def test_moderation_response_checked_before_success(self):
+        import socketserver
+        class Stub(socketserver.BaseRequestHandler):
+            def handle(self):
+                wire = b''
+                while b'\r\n\r\n' not in wire:
+                    wire += self.request.recv(4096)
+                head, body = wire.split(b'\r\n\r\n', 1)
+                length = int(next(
+                    line.partition(b':')[2].strip()
+                    for line in head.split(b'\r\n') if line.lower().startswith(b'content-length:')
+                ))
+                while len(body) < length:
+                    body += self.request.recv(4096)
+                req = json.loads(body[:length])
+                response = {'success': True, 'channel_id': req['channel_id'],
+                            'review_id': req['review_id'],
+                            'status': 'published' if req['action'] == 'review_approve'
+                                      else 'published'}
+                encoded = json.dumps(response).encode()
+                self.request.sendall(
+                    b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                    + b'Content-Length: ' + str(len(encoded)).encode()
+                    + b'\r\nConnection: close\r\n\r\n' + encoded)
+        ipc = self.config / '.khabarchin-ipc.sock'
+        server = socketserver.UnixStreamServer(str(ipc), Stub)
+        self.addCleanup(server.server_close)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(thread.join, 2)
+        self.server.allowed_channels = frozenset({-10001})
+        self.server.allow_subscription_write = True
+        cmd = {'channel_id': -10001, 'review_id': 'a'*16}
+        code, data, _ = self.request('POST', '/v1/commands',
+            {'action': 'review_approve', **cmd, 'confirm': 'PUBLISH_REVIEW'})
+        self.assertEqual(code, 200)
+        self.assertEqual(data['status'], 'published')
+        code, data, _ = self.request('POST', '/v1/commands',
+            {'action': 'review_reject', **cmd, 'confirm': 'REJECT_REVIEW'})
+        self.assertEqual(code, 502)
+        self.assertEqual(data['error'], 'native review response mismatch')
+
 if __name__ == '__main__':
     unittest.main()
