@@ -285,6 +285,11 @@ def create_backup(config: Path, deployment_files: list[Path], backup_root: Path,
     backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(backup_root, 0o700)
     _assert_local_storage(backup_root)
+    source_bytes = sum(p.stat().st_size for p in (*dbs, *others, *deployment_files))
+    free = shutil.disk_usage(backup_root).free
+    # The online snapshots, config and restore checks must not exhaust the VPS.
+    if free < 2 * source_bytes + 512 * 1024 * 1024:
+        raise BackupError("Insufficient local disk headroom for safe backup")
     tmp = Path(tempfile.mkdtemp(prefix=".rsstt-incomplete-", dir=backup_root))
     os.chmod(tmp, 0o700)
     records: list[dict[str, Any]] = []
