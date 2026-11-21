@@ -50,7 +50,7 @@ To enable rule updates **after authorization and testing**, add `--allow-rules-w
 python3 -m unittest discover -s tests -p 'test_khabarchin_control_api.py' -v
 ```
 
-Thirteen synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. The 13 local fixtures pass; local fixture PASS is **not** VPS deployment proof.
+Fourteen synthetic offline tests cover authentication, host allowlisting, database visibility, secret redaction, immutable review payloads, default read-only configuration, ETag conflict checks, validation, audit, malformed limits and missing DBs. Fourteen synthetic tests are defined; the current source revision has no GitHub Actions PASS evidence, and local fixture PASS is **not** VPS deployment proof.
 
 ## Release gates
 
@@ -60,3 +60,7 @@ Thirteen synthetic offline tests cover authentication, host allowlisting, databa
 - Test API calls through the existing private GitHub Actions owner runner with a pinned SSH identity.
 - Verify native Telegram subscription and publishing flow separately.
 - Rollback by stopping only the API service; RSStT itself must remain unaffected.
+
+## وضعیت آزمون جاری
+
+آزمون چهاردهم برای بررسی جلوگیری از عبور توکن از پراکسی‌های محیطی اضافه شد. گردش‌کار GitHub-hosted فقط داده ساختگی اجرا می‌کند؛ هیچ اجرای تولیدی یا ارسال داده واقعی انجام نمی‌شود. برچسب `PASS` قبلی فقط به نسخه پیشین کد مربوط است، نه آخرین Commit.
