@@ -76,6 +76,16 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(mod.BackupError):
             mod.create_backup(self.config, [], self.root / "backups")
 
+    def test_mountinfo_selects_longest_matching_mount(self):
+        table = ("1 0 0:1 / / rw - ext4 /dev/vda1 rw\n"
+                 "2 1 0:2 / /var/backups rw - nfs4 server:/archive rw\n")
+        self.assertEqual(mod._backing_fs(Path("/var/backups/khabarchin"), table), "nfs4")
+        self.assertEqual(mod._backing_fs(Path("/srv/khabarchin"), table), "ext4")
+
+    def test_mountinfo_rejects_unverifiable_location(self):
+        with self.assertRaises(mod.BackupError):
+            mod._backing_fs(Path("/var/backups/khabarchin"), "")
+
     def test_rejects_symlinked_backup_root(self):
         backing = self.root / "actual_output"
         backing.mkdir()
