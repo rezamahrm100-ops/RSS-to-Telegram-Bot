@@ -85,8 +85,9 @@ async def _dispatch(request):
     try:
         if action == "subscribe":
             # Existing RSStT logic performs RSS parsing, ORM writes, limits and scheduler updates.
-            outcome = await native_sub.sub(channel_id, value["url"], lang="en")
-            item = outcome.get("sub")
+            outcome = await native_sub.subs(channel_id, (value["url"],), lang="en")
+            first = (outcome or {}).get("sub_d_l", ())
+            item = first[0].get("sub") if first else None
             if item is None:
                 return web.json_response({"error": "subscription unchanged or rejected"}, status=409)
             return web.json_response({"success": True, "action": action,
