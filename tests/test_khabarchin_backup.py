@@ -76,6 +76,22 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(mod.BackupError):
             mod.create_backup(self.config, [], self.root / "backups")
 
+    def test_rejects_symlinked_backup_root(self):
+        backing = self.root / "actual_output"
+        backing.mkdir()
+        shortcut = self.root / "shortcut"
+        shortcut.symlink_to(backing, target_is_directory=True)
+        with self.assertRaises(mod.BackupError):
+            mod.create_backup(self.config, [], shortcut)
+
+    def test_rejects_symlinked_backup_ancestor(self):
+        backing = self.root / "actual_output"
+        backing.mkdir()
+        shortcut = self.root / "shortcut"
+        shortcut.symlink_to(backing, target_is_directory=True)
+        with self.assertRaises(mod.BackupError):
+            mod.create_backup(self.config, [], shortcut / "nested")
+
 
 if __name__ == "__main__":
     unittest.main()
