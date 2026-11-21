@@ -29,6 +29,7 @@ MAX_REQUEST_BYTES = 8192
 MAX_CONFIG_BYTES = 262144
 WRITE_LOCK = threading.Lock()
 RULE_PATH = re.compile(r"/v1/rules/(-?\d{1,20})\Z")
+SUB_SETTING_PATH = re.compile(r"/v1/subscriptions/([1-9][0-9]{0,18})/settings\Z")
 ALLOWED_RULE_FIELDS = frozenset({"mode", "deduplicate", "include", "exclude"})
 NATIVE_ACTIONS = frozenset({
     "subscribe", "unsubscribe", "activate", "deactivate",
@@ -291,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                                         "bot_running": "not_checked"})
             if path == "/v1/capabilities":
                 return self._json(200, {"read": ["health", "status", "feeds", "subscriptions",
-                                                 "rules", "reviews"],
+                                                 "subscriptions.settings", "rules", "reviews"],
                                         "write": ((["rules.update"] if self.server.allow_rules_write else [])
                                                    + (["subscriptions.subscribe", "subscriptions.unsubscribe",
                                                        "subscriptions.activate", "subscriptions.deactivate",
@@ -320,6 +321,26 @@ class Handler(BaseHTTPRequestHandler):
                     "f.title AS feed_title,f.link AS feed_link FROM sub AS s "
                     "JOIN feed AS f ON s.feed_id=f.id ORDER BY s.id DESC LIMIT ?",
                     (self._limit(),))})
+            match = SUB_SETTING_PATH.fullmatch(path)
+            if match:
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(query) != {"channel_id"} or len(query["channel_id"]) != 1:
+                    raise ApiError(400, "channel_id required")
+                try:
+                    channel = int(query["channel_id"][0])
+                except ValueError:
+                    raise ApiError(400, "invalid channel_id") from None
+                if (type(channel) is not int or channel not in self.server.allowed_channels
+                        or str(channel) != query["channel_id"][0]):
+                    raise ApiError(403, "channel not approved")
+                rows = _sqlite_read(self.server.db,
+                    "SELECT id,user_id AS channel_id,feed_id,state,title,tags,interval,"
+                    "notify,send_mode,length_limit,link_preview,display_author,"
+                    "display_via,display_title,display_entry_tags,style,display_media "
+                    "FROM sub WHERE id=? AND user_id=? LIMIT 1", (int(match.group(1)), channel))
+                if not rows:
+                    raise ApiError(404, "subscription not found")
+                return self._json(200, {"settings": rows[0]})
             if path == "/v1/reviews":
                 limit = self._limit()
                 if self.server.review_db.is_symlink():
