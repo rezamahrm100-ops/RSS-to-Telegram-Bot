@@ -68,6 +68,19 @@ def _read_config(path: Path) -> tuple[dict, str]:
     return config, '"' + hashlib.sha256(data).hexdigest() + '"'
 
 
+def _read_optional_config(path: Path) -> tuple[dict | None, str | None]:
+    """Absence means RSSPlus has not been configured, not a broken RSStT database.
+
+    Reject symlinks (including dangling ones) and malformed/oversized present files.
+    Writes always use the strict _read_config path and never create RSSPlus config.
+    """
+    if path.is_symlink():
+        raise ApiError(503, "RSSPlus configuration unavailable")
+    if not path.exists():
+        return None, None
+    return _read_config(path)
+
+
 def _public_policy(value) -> dict:
     """Never disclose unknown/future secret-bearing RSSPlus policy fields."""
     if not isinstance(value, dict):
@@ -210,9 +223,10 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT (SELECT COUNT(*) FROM feed) AS feeds, "
                     "(SELECT COUNT(*) FROM sub) AS subscriptions, "
                     "(SELECT COUNT(*) FROM sub WHERE state=1) AS active_subscriptions")
-                cfg, _ = _read_config(self.server.config_file)
+                cfg, _ = _read_optional_config(self.server.config_file)
                 return self._json(200, {"db": "readable", **counts[0],
-                                        "rssplus_enabled": cfg.get("enabled") is True,
+                                        "rssplus_configured": cfg is not None,
+                                        "rssplus_enabled": bool(cfg and cfg.get("enabled") is True),
                                         "bot_running": "not_checked"})
             if path == "/v1/feeds":
                 return self._json(200, {"items": _sqlite_read(self.server.db,
@@ -225,18 +239,29 @@ class Handler(BaseHTTPRequestHandler):
                     "JOIN feed AS f ON s.feed_id=f.id ORDER BY s.id DESC LIMIT ?",
                     (self._limit(),))})
             if path == "/v1/reviews":
+                limit = self._limit()
+                if self.server.review_db.is_symlink():
+                    raise ApiError(503, "RSSPlus review database unavailable")
+                if not self.server.review_db.exists():
+                    cfg, _ = _read_optional_config(self.server.config_file)
+                    if cfg and cfg.get("enabled") is True:
+                        raise ApiError(503, "RSSPlus review database unavailable")
+                    return self._json(200, {"items": [], "available": False})
                 return self._json(200, {"items": _sqlite_read(self.server.review_db,
                     "SELECT id,chat_id,sub_id,status,created_at FROM items "
-                    "ORDER BY created_at DESC LIMIT ?", (self._limit(),))})
+                    "ORDER BY created_at DESC LIMIT ?", (limit,)), "available": True})
             if path == "/v1/rules":
-                cfg, etag = _read_config(self.server.config_file)
+                cfg, etag = _read_optional_config(self.server.config_file)
+                if cfg is None:
+                    return self._json(200, {"enabled": False, "configured": False,
+                                            "default": {}, "targets": {}})
                 targets = cfg.get("targets", {})
                 if not isinstance(targets, dict):
                     targets = {}
                 public_targets = {str(k): _public_policy(v) for k, v in targets.items()
                                   if str(k).lstrip("-").isdigit()}
                 return self._json(200, {"enabled": cfg.get("enabled") is True,
-                    "default": _public_policy(cfg.get("default")),
+                    "configured": True, "default": _public_policy(cfg.get("default")),
                     "targets": public_targets}, etag)
             raise ApiError(404, "unknown endpoint")
         except ApiError as exc:
