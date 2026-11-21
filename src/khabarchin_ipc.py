@@ -29,6 +29,15 @@ _channels = frozenset()
 _SETTING_ACTIONS = frozenset({
     "set_interval", "set_length_limit", "set_title", "set_hashtags", "set_option",
 })
+_DEFAULT_ACTIONS = frozenset({
+    "set_default_interval", "set_default_length_limit", "set_default_option",
+})
+_BULK_ACTIONS = frozenset({"activate_all", "deactivate_all"})
+_SUB_OPTION_FIELDS = (
+    "length_limit", "notify", "send_mode", "link_preview", "display_author",
+    "display_media", "display_title", "display_entry_tags", "display_via", "style",
+)
+
 
 
 def _safe_string(value, limit: int):
@@ -61,6 +70,41 @@ def _valid_setting(value):
         return _safe_string(item, 255)
     return False
 
+
+
+def _valid_default_setting(payload):
+    action = payload.get("action")
+    if action == "set_default_option":
+        field = payload.get("field")
+        choices = native_customization.SUB_OPTIONS_EXHAUSTIVE_VALUES
+        return (set(payload) == {"action", "channel_id", "field", "value"}
+                and isinstance(field, str) and field in choices
+                and type(payload.get("value")) is int
+                and payload["value"] in choices[field])
+    if set(payload) != {"action", "channel_id", "value"}:
+        return False
+    value = payload.get("value")
+    if action == "set_default_interval":
+        return value is None or (type(value) is int and 1 <= value <= 1440)
+    if action == "set_default_length_limit":
+        return type(value) is int and 0 <= value <= 4096
+    return False
+
+
+def _valid_bulk(payload):
+    action = payload.get("action")
+    return (set(payload) == {"action", "channel_id", "expected_count", "confirm"}
+            and action in _BULK_ACTIONS
+            and type(payload.get("expected_count")) is int
+            and 0 <= payload["expected_count"] <= 10000
+            and payload.get("confirm") == ("ACTIVATE_ALL" if action == "activate_all"
+                                            else "DEACTIVATE_ALL"))
+
+
+def _reset_response(sub):
+    return {"success": True, "action": "reset_subscription",
+            "channel_id": sub.user_id, "subscription_id": sub.id,
+            "reset_fields": ["interval", *_SUB_OPTION_FIELDS]}
 
 
 def _positive_int(value):
@@ -117,6 +161,15 @@ async def _dispatch(request):
     elif action in _SETTING_ACTIONS:
         if not _valid_setting(value):
             raise web.HTTPBadRequest(text='{"error":"invalid settings request"}', content_type="application/json")
+    elif action in _DEFAULT_ACTIONS:
+        if not _valid_default_setting(value):
+            raise web.HTTPBadRequest(text='{"error":"invalid default settings"}', content_type="application/json")
+    elif action in _BULK_ACTIONS:
+        if not _valid_bulk(value):
+            raise web.HTTPBadRequest(text='{"error":"invalid bulk confirmation"}', content_type="application/json")
+    elif action == "reset_subscription":
+        if set(value) != {"action", "channel_id", "subscription_id"} or not _positive_int(value.get("subscription_id")):
+            raise web.HTTPBadRequest(text='{"error":"invalid reset request"}', content_type="application/json")
     else:
         raise web.HTTPBadRequest(text='{"error":"unsupported operation"}', content_type="application/json")
 
@@ -131,6 +184,46 @@ async def _dispatch(request):
                 return web.json_response({"error": "subscription unchanged or rejected"}, status=409)
             return web.json_response({"success": True, "action": action,
                                       "channel_id": channel_id, "subscription_id": item.id})
+        if action in _DEFAULT_ACTIONS:
+            user = await db.User.get_or_none(id=channel_id)
+            if user is None:
+                return web.json_response({"error": "destination not registered"}, status=404)
+            if action == "set_default_interval":
+                await native_customization.set_interval(
+                    user, -100 if value["value"] is None else value["value"])
+                field = "interval"
+            elif action == "set_default_length_limit":
+                await native_customization.set_length_limit(user, value["value"])
+                field = "length_limit"
+            else:
+                field = value["field"]
+                if getattr(user, field) != value["value"]:
+                    setattr(user, field, value["value"])
+                    await user.save(update_fields=(field,))
+            return web.json_response({"success": True, "action": action,
+                                      "channel_id": channel_id, "field": field,
+                                      "value": getattr(user, field)})
+        if action in _BULK_ACTIONS:
+            count = await db.Sub.filter(user_id=channel_id).count()
+            if count != value["expected_count"]:
+                return web.json_response({"error": "subscription count changed"}, status=409)
+            changed = await native_utils.activate_or_deactivate_all_subs(
+                channel_id, activate=(action == "activate_all"))
+            return web.json_response({"success": True, "action": action,
+                                      "channel_id": channel_id, "total_count": count,
+                                      "affected_count": len(changed)})
+        if action == "reset_subscription":
+            sub = await db.Sub.get_or_none(id=value["subscription_id"], user_id=channel_id)
+            if sub is None:
+                return web.json_response({"error": "subscription not found"}, status=404)
+            interval_was_custom = sub.interval is not None
+            sub.interval = None
+            for field in _SUB_OPTION_FIELDS:
+                setattr(sub, field, -100)
+            await sub.save(update_fields=("interval", *_SUB_OPTION_FIELDS))
+            if interval_was_custom:
+                await native_utils.update_interval(sub)
+            return web.json_response(_reset_response(sub))
         if action in _SETTING_ACTIONS:
             # Look up through the live bot ORM; never let API mutate another channel's subscription.
             sub = await db.Sub.get_or_none(id=value["subscription_id"], user_id=channel_id)
