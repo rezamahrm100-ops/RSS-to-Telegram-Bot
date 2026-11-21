@@ -26,6 +26,7 @@ SQLITE_MAGIC = b"SQLite format 3\x00"
 SIDE_CAR_SUFFIXES = ("-wal", "-shm", "-journal")
 SQLITE_SUFFIXES = (".sqlite", ".sqlite3", ".db")
 CONTAINER_MATCH = re.compile(r"(rssplus|rsstt|rss[-_]to[-_]telegram)", re.I)
+DB_ENV_KEYS = {"DATABASE_URL", "DATABASE_PRIVATE_URL", "DATABASE_PUBLIC_URL"}
 
 
 class BackupError(RuntimeError):
@@ -66,6 +67,47 @@ def identify_container(explicit: str | None) -> dict[str, Any]:
     return info[0]
 
 
+def _validate_sqlite_config_url(value: str, config: Path) -> None:
+    """Fail closed when ANY declared DB may be off-volume; never print values."""
+    value = value.strip().strip('"').strip("'")
+    if not value:
+        return
+    if not value.startswith("sqlite:"):
+        raise BackupError("Potential non-SQLite database configured; abort")
+    raw = value[len("sqlite:"):]
+    if raw.startswith("////"):
+        raw = raw[3:]
+    if not raw.startswith("/app/config/") or any(x in raw for x in ("?", "#", "$")):
+        raise BackupError("Database URL is not a plain path in /app/config")
+    relative = Path(raw).relative_to("/app/config")
+    if not relative.parts or ".." in relative.parts:
+        raise BackupError("Database path is ambiguous")
+    expected = config / relative
+    if expected.is_symlink() or not expected.is_file():
+        raise BackupError("Declared SQLite database missing from persistent config")
+
+
+def _check_local_dotenv(path: Path, config: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_symlink() or not path.is_file():
+        raise BackupError("Environment file is missing or symlinked")
+    # The data is read only for validation. Values are never printed or logged.
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (UnicodeError, OSError) as exc:
+        raise BackupError("Cannot inspect environment configuration") from exc
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in DB_ENV_KEYS:
+            _validate_sqlite_config_url(value.strip(), config)
+
+
 def container_state(info: dict[str, Any]) -> tuple[Path, list[Path]]:
     mounts = [m for m in info.get("Mounts", []) if m.get("Destination") == "/app/config"]
     if len(mounts) != 1 or mounts[0].get("Type") not in {"bind", "volume"}:
@@ -74,21 +116,12 @@ def container_state(info: dict[str, Any]) -> tuple[Path, list[Path]]:
     if not config.is_dir():
         raise BackupError("Persistent config mount is not an accessible directory")
 
-    # Container inspect exposes environment variables, but values must never be logged.
-    env = info.get("Config", {}).get("Env") or []
-    db_values = [entry.partition("=")[2] for entry in env if entry.startswith("DATABASE_URL=")]
-    if db_values:
-        db_url = db_values[-1].lower()
-        if not db_url.startswith("sqlite:"):
-            raise BackupError("Non-SQLite DATABASE_URL: this tool cannot claim a complete backup")
-        # Common accepted forms: sqlite:/app/config/db.sqlite3 and
-        # SQLAlchemy-style sqlite:////app/config/db.sqlite3. Fail closed on
-        # other explicit locations (including /app path outside the mount).
-        db_location = db_url.removeprefix("sqlite:")
-        if db_location.startswith("////"):
-            db_location = db_location[3:]
-        if not db_location.startswith("/app/config/"):
-            raise BackupError("Explicit SQLite database location is outside /app/config or ambiguous")
+    # Docker's Environment is not sufficient: RSStT also loads .env files with
+    # override=True. Validate both sources without ever printing credentials.
+    for entry in info.get("Config", {}).get("Env") or []:
+        key, sep, value = entry.partition("=")
+        if sep and key in DB_ENV_KEYS:
+            _validate_sqlite_config_url(value, config)
 
     labels = info.get("Config", {}).get("Labels") or {}
     working = labels.get("com.docker.compose.project.working_dir", "")
@@ -111,6 +144,10 @@ def container_state(info: dict[str, Any]) -> tuple[Path, list[Path]]:
                 paths.append(p)
             else:
                 raise BackupError("Compose label references an unavailable file")
+    _check_local_dotenv(config / ".env", config)
+    for p in paths:
+        if p.name.startswith(".env"):
+            _check_local_dotenv(p, config)
     return config, list(dict.fromkeys(paths))
 
 
