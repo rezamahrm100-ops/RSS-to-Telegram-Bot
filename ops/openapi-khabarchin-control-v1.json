@@ -1,0 +1,270 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Khabarchin RSStT Control API",
+    "version": "0.1.0",
+    "description": "Loopback-only owner API. Real production backup, Telegram publishing and deployment are NOT implemented by this API."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8765",
+      "description": "Same VPS loopback only; no public gateway"
+    }
+  ],
+  "security": [
+    {
+      "vpsLocalBearer": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "vpsLocalBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Random VPS-local token stored in a restricted file; never in GitHub/Actions artifacts"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "RulePatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "review"
+            ]
+          },
+          "deduplicate": {
+            "type": "boolean"
+          },
+          "include": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "exclude": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "operationId": "getGatewayHealth",
+        "summary": "Gateway health, not bot liveliness",
+        "responses": {
+          "200": {
+            "description": "Gateway serving",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Current allowlisted operations",
+        "responses": {
+          "200": {
+            "description": "Capabilities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "operationId": "getBotDatabaseStatus",
+        "summary": "RSStT database counters, no bot process claim",
+        "responses": {
+          "200": {
+            "description": "Counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "DB unavailable"
+          }
+        }
+      }
+    },
+    "/v1/feeds": {
+      "get": {
+        "operationId": "listFeeds",
+        "summary": "Read-only feed metadata",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Feed records"
+          }
+        }
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "operationId": "listSubscriptions",
+        "summary": "Read-only subscriptions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription records"
+          }
+        }
+      }
+    },
+    "/v1/reviews": {
+      "get": {
+        "operationId": "listReviewMetadata",
+        "summary": "Review queue excluding archived private article bodies",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Review metadata"
+          }
+        }
+      }
+    },
+    "/v1/rules": {
+      "get": {
+        "operationId": "getRules",
+        "summary": "Current RSSPlus rules with redacted top-level secrets",
+        "responses": {
+          "200": {
+            "description": "Rules and ETag",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/rules/{channel_id}": {
+      "put": {
+        "operationId": "updateRules",
+        "summary": "Opt-in atomic policy edit with If-Match; disabled unless operator enables",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated config and new ETag"
+          },
+          "403": {
+            "description": "Writes disabled"
+          },
+          "412": {
+            "description": "ETag mismatch"
+          },
+          "428": {
+            "description": "If-Match missing"
+          }
+        }
+      }
+    }
+  }
+}
