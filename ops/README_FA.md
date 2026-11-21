@@ -37,4 +37,4 @@ python3 ops/rsstt_backup.py verify /var/backups/khabarchin/rsstt/rsstt-YYYYMMDDT
 python3 -m unittest discover -s tests -p 'test_khabarchin_backup.py' -v
 ```
 
-آزمون‌ها روی دو SQLite ساختگی، WAL، تشخیص دستکاری فایل، مغایرت تعداد پایگاه‌ها، مسیر ناامن و Symlink انجام می‌شوند. گردش‌کار GitHub Actions فقط داده ساختگی می‌سازد و هیچ اتصال به VPS ندارد.
+هشت آزمون تعریف شده‌اند: دو SQLite ساختگی، WAL، تشخیص دستکاری فایل، مغایرت تعداد پایگاه‌ها، مسیر ناامن و پیوندهای نمادین در داده‌ها، ریشه مقصد و پوشه‌های والد. اجرای این آزمون‌ها روی SHA فعلی در GitHub Actions هنوز تأیید نشده است. گردش‌کار GitHub Actions فقط داده ساختگی می‌سازد و هیچ اتصال به VPS ندارد.
