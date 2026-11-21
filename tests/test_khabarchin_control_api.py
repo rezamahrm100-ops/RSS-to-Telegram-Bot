@@ -191,5 +191,84 @@ class ApiTests(unittest.TestCase):
         self.db.unlink()
         self.assertEqual(self.request('GET', '/v1/status')[0], 503)
 
+    def test_native_bridge_source_syntax(self):
+        import ast
+        source = (BASE / "src/khabarchin_ipc.py").read_text()
+        ast.parse(source)
+
+    def test_subscription_write_is_off_by_default(self):
+        code, payload, _ = self.request('POST', '/v1/commands', {
+            'action': 'subscribe', 'channel_id': -10001,
+            'url': 'https://example.org/feed'})
+        self.assertEqual((code, payload['error']), (403, 'subscription commands disabled'))
+
+    def test_native_write_rejects_unapproved_channel_and_actions(self):
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        code, _, _ = self.request('POST', '/v1/commands', {
+            'action': 'subscribe', 'channel_id': -19999, 'url': 'https://example.org/feed'})
+        self.assertEqual(code, 403)
+        code, _, _ = self.request('POST', '/v1/commands', {
+            'action': 'shell', 'channel_id': -10001, 'command': 'id'})
+        self.assertEqual(code, 400)
+        code, _, _ = self.request('POST', '/v1/commands', {
+            'action': 'unsubscribe', 'channel_id': -10001, 'subscription_id': True})
+        self.assertEqual(code, 400)
+        code, _, _ = self.request('POST', '/v1/commands', {
+            'action': 'unsubscribe', 'channel_id': -10001, 'subscription_id': 1,
+            'additional': 'forbidden'})
+        self.assertEqual(code, 400)
+
+    def test_native_socket_missing_fails_closed(self):
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('POST', '/v1/commands', {
+            'action': 'activate', 'channel_id': -10001, 'subscription_id': 1})
+        self.assertEqual(code, 503)
+        self.assertEqual(data['error'], 'native bot control unavailable')
+        self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
+
+    def test_native_socket_real_local_round_trip_without_sql_mutation(self):
+        import os
+        import socketserver
+        import time
+
+        class Stub(socketserver.BaseRequestHandler):
+            def handle(self):
+                wire = b''
+                while b'\\r\\n\\r\\n' not in wire:
+                    wire += self.request.recv(4096)
+                head, body = wire.split(b'\\r\\n\\r\\n', 1)
+                length = 0
+                for line in head.split(b'\\r\\n'):
+                    if line.lower().startswith(b'content-length:'):
+                        length = int(line.partition(b':')[2].strip())
+                while len(body) < length:
+                    body += self.request.recv(4096)
+                parsed = json.loads(body[:length])
+                assert parsed == {'action': 'activate', 'channel_id': -10001,
+                                  'subscription_id': 1}
+                answer = json.dumps({'success': True, 'subscription_id': 1}).encode()
+                self.request.sendall(b'HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n'
+                                     + b'Content-Length: ' + str(len(answer)).encode()
+                                     + b'\\r\\nConnection: close\\r\\n\\r\\n' + answer)
+
+        ipc = self.config / '.khabarchin-ipc.sock'
+        backend = socketserver.UnixStreamServer(str(ipc), Stub)
+        self.addCleanup(backend.server_close)
+        thread = threading.Thread(target=backend.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(backend.shutdown)
+        self.addCleanup(thread.join, 2)
+        self.server.allow_subscription_write = True
+        self.server.allowed_channels = frozenset({-10001})
+        code, data, _ = self.request('POST', '/v1/commands', {
+            'action': 'activate', 'channel_id': -10001, 'subscription_id': 1})
+        self.assertEqual(code, 200)
+        self.assertTrue(data['success'])
+        self.assertEqual(self.request('GET', '/v1/status')[1]['subscriptions'], 1)
+        audit = (self.config / '.khabarchin-api-audit.jsonl').read_text()
+        self.assertIn('subscriptions.activate', audit)
+
 if __name__ == '__main__':
     unittest.main()
