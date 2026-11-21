@@ -42,6 +42,7 @@ from telethon.tl import types
 from random import sample
 
 from . import log, db, command
+from . import khabarchin_ipc
 from .monitor import Monitor
 from .i18n import i18n, ALL_LANGUAGES, get_commands_list
 from .parsing import tgraph
@@ -263,6 +264,12 @@ async def pre():
     bot.add_event_handler(command.misc.cmd_start,
                           command.utils.GroupMigratedAction())
 
+    # Optional control API must never prevent the RSS bot from starting.
+    try:
+        await khabarchin_ipc.start()
+    except Exception:
+        logger.error('Khabarchin control adapter unavailable; RSS bot remains operational', exc_info=True)
+
 
 async def lazy():
     manager_lang_d: dict[int, str] = dict(await db.User.filter(id__in=env.MANAGER).values_list('id', 'lang'))
@@ -294,6 +301,10 @@ async def lazy():
 
 async def post():
     logger.info('Exiting gracefully...')
+    try:
+        await khabarchin_ipc.stop()
+    except Exception:
+        logger.error('Khabarchin control adapter cleanup failed', exc_info=True)
     tasks = [
         asyncio.shield(loop.create_task(db.close())),
         loop.create_task(tgraph.close()),
