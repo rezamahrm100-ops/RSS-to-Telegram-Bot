@@ -249,10 +249,16 @@
                 "minimum": 1
               },
               "value": {
-                "type": "integer",
-                "minimum": -100,
-                "maximum": 4096,
-                "description": "-100 or 0 to 4096"
+                "anyOf": [
+                  {
+                    "const": -100
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4096
+                  }
+                ]
               }
             }
           },
